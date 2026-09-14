@@ -49,6 +49,11 @@ export type VideoPlayerError =
   | VideoControllerStateError
   | RegisteredVideoPlayerError
 
+/** Canonical message extraction shared by the controller and the Effect layer. */
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 /** True for a built-in player error or an explicitly marked adapter error. */
 export function isVideoPlayerError(error: unknown): error is VideoPlayerError {
   if (error instanceof VideoBackendUnavailableError

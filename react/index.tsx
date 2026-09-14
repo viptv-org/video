@@ -13,7 +13,6 @@ import {
   attachVideo,
   type AttachVideoOptions,
   type MediaInfo,
-  type MediaTrack,
   type PlayerCapabilities,
   type TrackKind,
   type VideoController,
@@ -116,37 +115,15 @@ export function VideoPlayer({
     if (!element) return
     const videoElement = element
     let cancelled = false
-    let lastMediaTracks: readonly MediaTrack[] | undefined
-    let lastMediaChapters: MediaInfo['chapters'] | undefined
-    let lastMediaDuration: number | undefined
-    let lastMediaSeekable: boolean | undefined
-    let lastMediaLive: boolean | undefined
-    let lastSeekableStart: number | undefined
-    let lastSeekableEnd: number | undefined
-    let lastMediaContainer: string | undefined
+    let lastMedia: MediaInfo | undefined
     const abort = new AbortController()
 
     const update = (forceMedia = false) => {
       const controller = controllerRef.current
       if (!controller) return
       const latest = controller.media
-      if (forceMedia
-        || latest.tracks !== lastMediaTracks
-        || latest.chapters !== lastMediaChapters
-        || latest.durationSeconds !== lastMediaDuration
-        || latest.seekable !== lastMediaSeekable
-        || latest.live !== lastMediaLive
-        || latest.seekableStartSeconds !== lastSeekableStart
-        || latest.seekableEndSeconds !== lastSeekableEnd
-        || latest.container !== lastMediaContainer) {
-        lastMediaTracks = latest.tracks
-        lastMediaChapters = latest.chapters
-        lastMediaDuration = latest.durationSeconds
-        lastMediaSeekable = latest.seekable
-        lastMediaLive = latest.live
-        lastSeekableStart = latest.seekableStartSeconds
-        lastSeekableEnd = latest.seekableEndSeconds
-        lastMediaContainer = latest.container
+      if (forceMedia || mediaChanged(latest, lastMedia)) {
+        lastMedia = latest
         setMedia({ ...latest })
       }
       const quality = controller.playbackQuality()
@@ -520,6 +497,22 @@ function toError(reason: unknown): Error {
 }
 
 const EMPTY_MEDIA: MediaInfo = { seekable: true, live: false, tracks: [], chapters: [] }
+
+/**
+ * Field-level media comparison. `MediaInfo` snapshots are replaced rather than
+ * mutated, so equal field values mean an unchanged render input.
+ */
+function mediaChanged(latest: MediaInfo, previous: MediaInfo | undefined): boolean {
+  return !previous
+    || latest.tracks !== previous.tracks
+    || latest.chapters !== previous.chapters
+    || latest.durationSeconds !== previous.durationSeconds
+    || latest.seekable !== previous.seekable
+    || latest.live !== previous.live
+    || latest.seekableStartSeconds !== previous.seekableStartSeconds
+    || latest.seekableEndSeconds !== previous.seekableEndSeconds
+    || latest.container !== previous.container
+}
 
 function liveTimeLabel(currentTime: number, liveEdge: number): string {
   const offset = Math.max(0, liveEdge - currentTime)

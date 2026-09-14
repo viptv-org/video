@@ -3,6 +3,7 @@ import { parse } from '@plussub/srt-vtt-parser'
 import { Cause, Effect, Exit, Option } from 'effect'
 
 import {
+  errorMessage,
   isVideoPlayerError,
   VideoControllerStateError,
   VideoLoadError,
@@ -400,18 +401,12 @@ export class SwitchingVideoController extends VideoEventTarget implements VideoC
 
   #updateSubtitleCues(currentTime: number): void {
     if (!this.#subtitleTrack) return
-    let visibleCount = 0
-    let unchanged = true
-    for (const cue of this.#subtitleCues) {
-      if (cue.startSeconds > currentTime || cue.endSeconds <= currentTime) continue
-      if (cue.id !== this.#visibleCues[visibleCount]?.id) unchanged = false
-      visibleCount += 1
-    }
-    if (unchanged && visibleCount === this.#visibleCues.length) return
     const visible: SubtitleCue[] = []
     for (const cue of this.#subtitleCues) {
       if (cue.startSeconds <= currentTime && cue.endSeconds > currentTime) visible.push(cue)
     }
+    if (visible.length === this.#visibleCues.length
+      && visible.every((cue, index) => cue.id === this.#visibleCues[index]?.id)) return
     this.#publishCues(visible)
   }
 
@@ -459,7 +454,7 @@ export class SwitchingVideoController extends VideoEventTarget implements VideoC
   }
 
   #publishSubtitleError(trackId: string, cause: unknown): void {
-    const message = cause instanceof Error ? cause.message : String(cause)
+    const message = errorMessage(cause)
     this.dispatchEvent(new CustomEvent('error', {
       detail: {
         code: 'subtitle_load_failed',
@@ -600,13 +595,14 @@ export class SwitchingVideoController extends VideoEventTarget implements VideoC
 export async function runVideoEffectPromise<A, E>(
   program: Effect.Effect<A, E>,
 ): Promise<A> {
-  const exit = await Effect.runPromiseExit(program)
-  if (Exit.isSuccess(exit)) return exit.value
-  throw failureOrCause(exit.cause)
+  return unwrapExit(await Effect.runPromiseExit(program))
 }
 
 export function runVideoEffectSync<A, E>(program: Effect.Effect<A, E>): A {
-  const exit = Effect.runSyncExit(program)
+  return unwrapExit(Effect.runSyncExit(program))
+}
+
+function unwrapExit<A, E>(exit: Exit.Exit<A, E>): A {
   if (Exit.isSuccess(exit)) return exit.value
   throw failureOrCause(exit.cause)
 }
@@ -620,8 +616,4 @@ function failureOrCause<E>(cause: Cause.Cause<E>): E | unknown {
 
 function subtitleFormat(track: ExternalSubtitleTrack): 'vtt' | 'srt' {
   return track.src?.toLowerCase().split(/[?#]/, 1)[0]?.endsWith('.srt') ? 'srt' : 'vtt'
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

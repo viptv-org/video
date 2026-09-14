@@ -2,6 +2,7 @@ import { VideoFeatureUnavailableError } from '../errors'
 import { VideoEventTarget } from '../events'
 import { bufferedAhead } from '../index'
 import { startController } from './lifecycle'
+import { emptyMediaInfo, inferContainer, normalizeSource } from './shared'
 import type {
   AttachVideoOptions,
   MediaInfo,
@@ -13,7 +14,6 @@ import type {
   BackendVideoController,
   VideoControlsTarget,
   VideoFitMode,
-  VideoSource,
 } from '../index'
 
 type HtmlBackend = 'html' | 'webos' | 'vizio'
@@ -34,7 +34,7 @@ class HtmlVideoController extends VideoEventTarget implements BackendVideoContro
   readonly capabilities: PlayerCapabilities
   readonly #options: AttachVideoOptions
   readonly #backend: HtmlBackend
-  readonly #media: MediaInfo = { seekable: true, live: false, tracks: [], chapters: [] }
+  readonly #media: MediaInfo = emptyMediaInfo()
   readonly #listeners: Array<readonly [string, EventListener]> = []
   readonly #original: {
     src: string
@@ -297,13 +297,4 @@ class HtmlVideoController extends VideoEventTarget implements BackendVideoContro
       detail: { bufferedAhead: this.bufferedAhead() },
     }))
   }
-}
-
-function normalizeSource(source: string | VideoSource): VideoSource {
-  return typeof source === 'string' ? { uri: source } : source
-}
-
-function inferContainer(uri: string): string | undefined {
-  const match = /\.([a-z0-9]+)(?:[?#]|$)/i.exec(uri)
-  return match?.[1]?.toLowerCase()
 }

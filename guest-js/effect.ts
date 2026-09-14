@@ -5,6 +5,7 @@ import { Context, Effect, Layer } from 'effect'
 import { attachHtmlVideo } from './backends/html'
 import { attachTizenVideo, hasTizenAvPlay } from './backends/tizen'
 import {
+  errorMessage,
   isVideoPlayerError,
   VideoBackendUnavailableError,
   VideoControllerStateError,
@@ -420,10 +421,6 @@ function disposeBackend(controller: BackendVideoController): Effect.Effect<void>
 
 const browserHttpTransport: HttpTransport = {
   fetch: (request) => globalThis.fetch(request),
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 function makeEffectVideoController(

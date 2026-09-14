@@ -1,6 +1,7 @@
 import { VideoBackendUnavailableError, VideoFeatureUnavailableError } from '../errors'
 import { VideoEventTarget } from '../events'
 import { startController } from './lifecycle'
+import { emptyMediaInfo, inferContainer, normalizeSource } from './shared'
 import type {
   AttachVideoOptions,
   MediaInfo,
@@ -12,7 +13,6 @@ import type {
   BackendVideoController,
   VideoControlsTarget,
   VideoFitMode,
-  VideoSource,
 } from '../index'
 
 interface AvPlayTrackInfo {
@@ -105,7 +105,7 @@ class TizenVideoController extends VideoEventTarget implements BackendVideoContr
   }
   readonly #options: AttachVideoOptions
   readonly #avplay: AvPlayApi
-  readonly #media: MediaInfo = { seekable: true, live: false, tracks: [], chapters: [] }
+  readonly #media: MediaInfo = emptyMediaInfo()
   readonly #originalVisibility: string
   readonly #ownerToken = Symbol('air-tizen-avplay-owner')
   #resize?: ResizeObserver
@@ -498,10 +498,6 @@ class TizenVideoController extends VideoEventTarget implements BackendVideoContr
   }
 }
 
-function normalizeSource(source: string | VideoSource): VideoSource {
-  return typeof source === 'string' ? { uri: source } : source
-}
-
 function describeTrack(track: AvPlayTrackInfo, selected: boolean): MediaTrack {
   const kind: TrackKind = track.type === 'VIDEO' ? 'video' : track.type === 'AUDIO' ? 'audio' : 'subtitle'
   let extra: Record<string, unknown> = {}
@@ -527,11 +523,6 @@ function describeTrack(track: AvPlayTrackInfo, selected: boolean): MediaTrack {
 }
 
 function trackKey(track: AvPlayTrackInfo): string { return `${track.type}:${track.index}` }
-
-function inferContainer(uri: string): string | undefined {
-  const match = /\.([a-z0-9]+)(?:[?#]|$)/i.exec(uri)
-  return match?.[1]?.toLowerCase()
-}
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value))

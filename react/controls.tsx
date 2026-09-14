@@ -28,19 +28,13 @@ export const VIDEO_CONTROLS_PROPS = { [VIDEO_CONTROLS_ATTRIBUTE]: '' }
 
 let spatialNavigationInitialized = false
 
-interface InitializeTvNavigationOptions {
-  debug?: boolean
-  visualDebug?: boolean
-  throttleMs?: number
-}
-
 /** Initialize Norigin once when the first TV player mounts. */
-function initializeTvNavigation(options: InitializeTvNavigationOptions = {}): void {
+function initializeTvNavigation(): void {
   if (spatialNavigationInitialized) return
   init({
-    debug: options.debug ?? false,
-    visualDebug: options.visualDebug ?? false,
-    throttle: options.throttleMs ?? 80,
+    debug: false,
+    visualDebug: false,
+    throttle: 80,
     throttleKeypresses: true,
     shouldFocusDOMNode: true,
   })
