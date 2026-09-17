@@ -247,6 +247,12 @@ export interface PlaybackCapabilities extends DirectFileCapabilities {
   readonly directPlay: boolean;
   readonly directMp4?: boolean;
   readonly directHls?: boolean;
+  /**
+   * The client plays the ORIGINAL absolute source URL itself through a native
+   * engine and never accepts managed (proxied or converted) delivery; the
+   * controller must not escalate its sessions up the delivery ladder.
+   */
+  readonly directUrls?: boolean;
   readonly hevcSdr: boolean;
 }
 
@@ -292,6 +298,8 @@ export interface PlaybackSessionView {
   readonly audioTracks: readonly PlaybackMediaTrack[];
   readonly subtitleTracks: readonly PlaybackMediaTrack[];
   readonly subtitlesSupported: boolean;
+  /** Source credentials a direct-URL session carries for native playback. */
+  readonly authorization?: PlaybackAuthorization;
 }
 
 /** A playback-port refusal: an HTTP-like status, with 0 meaning transport failure. */

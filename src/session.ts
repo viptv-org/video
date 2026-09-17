@@ -230,7 +230,11 @@ export class PlaybackSessionController<
           return await this.transition(intent, request, this.current, () => operation === this.operationGeneration);
         } catch (error) {
           if (operation !== this.operationGeneration) return this.cancelledResult();
-          const escalated = attempt < 2 ? escalatePreparation(request, error) : undefined;
+          // A direct-URL client never accepts managed delivery; a refusal
+          // surfaces instead of escalating up the delivery ladder.
+          const escalated = request.capabilities.directUrls !== true && attempt < 2
+            ? escalatePreparation(request, error)
+            : undefined;
           if (!escalated) throw error;
           request = escalated;
         }
@@ -253,6 +257,9 @@ export class PlaybackSessionController<
     if (['opening', 'replacing', 'preparing-next'].includes(this.currentSnapshot.state)) return true;
     const active = this.current;
     if (!active || snapshot.sessionId !== this.activePlayerSessionId) return true;
+    // A direct-URL client never escalates to managed delivery; the decoder
+    // failure surfaces honestly instead.
+    if (active.request.capabilities.directUrls) return false;
     const request = recoveryRequest(active.session, active.request, snapshot.error.code);
     if (!request || this.recoveredSessions.has(active.session.id)) return false;
     this.recoveredSessions.add(active.session.id);
@@ -416,7 +423,9 @@ export class PlaybackSessionController<
           await this.options.player.open(adapterRequest(session, itemKind(intent.item), request.position ?? 0, wasPaused));
           break;
         } catch (cause) {
-          const recovery = cause instanceof PlayerOperationError
+          // A direct-URL client never escalates an open failure into managed
+          // delivery; the adapter error surfaces instead.
+          const recovery = cause instanceof PlayerOperationError && request.capabilities.directUrls !== true
             ? recoveryRequest(session, request, cause.code)
             : undefined;
           if (!stillWanted() || !recovery) throw cause;
@@ -528,6 +537,7 @@ function adapterRequest(session: PlaybackSessionView, kind: PlaybackKind, positi
     deliveryMode: direct ? 'direct' : 'managed',
     deliveryFormat: session.format,
     paused,
+    authorization: session.authorization,
   };
 }
 

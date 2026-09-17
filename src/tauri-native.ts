@@ -138,6 +138,7 @@ export const TAURI_NATIVE_DELIVERY_CAPABILITIES: PlaybackCapabilities = {
   aac: true,
   hevcSdr: true,
   directPlay: true,
+  directUrls: true,
   directMp4: true,
   directHls: true,
   directFiles: true,

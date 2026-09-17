@@ -10,6 +10,13 @@ Release numbering follows the
   measured `webDeliveryCapabilities` wrapper with its managed-HLS gate, and
   the `deliveryCapabilitiesFor(platform)` dispatch for platform entry
   points.
+- Direct-URL delivery for native hosts: `PlaybackCapabilities.directUrls`
+  (declared by the Tauri profile) marks a client that plays the ORIGINAL
+  absolute source URL and never accepts managed delivery — the session
+  controller does not escalate such clients up the delivery ladder, so
+  refusals and decoder failures surface honestly instead of falling to
+  transcode. A playback session's source `authorization` now flows into
+  `OpenPlayerRequest.authorization` for native playback.
 
 ## 0.4.0
 

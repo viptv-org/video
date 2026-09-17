@@ -414,6 +414,7 @@ describe('TAURI_NATIVE_DELIVERY_CAPABILITIES', () => {
       directMp4: true,
       directHls: true,
       directFiles: true,
+      directUrls: true,
     });
     expect(TAURI_NATIVE_DELIVERY_CAPABILITIES.directVideoCodecs)
       .toEqual(expect.arrayContaining(['avc', 'hevc', 'vp9', 'av1']));

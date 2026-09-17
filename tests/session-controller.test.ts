@@ -21,10 +21,11 @@ class FakePlayer implements Player {
   snapshot: PlayerSnapshot = { sessionId: 0, state: 'idle', kind: null, time: { positionSeconds: 0, durationSeconds: 100 }, tracks: { audio: [], text: [], selectedAudioId: null, selectedTextId: null }, error: null };
   readonly opened: OpenPlayerRequest[] = [];
   failUrl: string | undefined;
+  failError: PlayerOperationError | undefined;
   private listeners = new Set<PlayerListener>();
   async open(request: OpenPlayerRequest) {
     this.opened.push(request);
-    if (request.url === this.failUrl) throw new Error('candidate cannot play');
+    if (request.url === this.failUrl) throw this.failError ?? new Error('candidate cannot play');
     this.snapshot = { ...this.snapshot, sessionId: this.snapshot.sessionId + 1, state: request.paused ? 'paused' : 'playing', kind: request.kind, time: { positionSeconds: request.timelineOffsetSeconds ?? request.startAtSeconds ?? 0, durationSeconds: 100 } };
     this.listeners.forEach((listener) => listener(this.snapshot));
   }
@@ -123,6 +124,59 @@ describe('PlaybackSessionController', () => {
       streamId: source.id, position: 42, capabilities, managedOnly: true, forceTranscode: true,
     });
   });
+  it('never escalates a direct-URL client to managed delivery on a delivery refusal', async () => {
+    const player = new FakePlayer();
+    const backend = {
+      startPlayback: vi.fn().mockRejectedValue(new TvApiError(406, 'Playback could not start; try forced transcoding or another stream')),
+      stopPlayback: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities: { ...capabilities, directUrls: true } });
+    await expect(controller.start({ item, source })).rejects.toMatchObject({ status: 406 });
+    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
+  });
+
+  it('never escalates a direct-URL client to managed delivery on an unsupported-format open failure', async () => {
+    const player = new FakePlayer();
+    player.failUrl = '/media/s/cap/source.mp4';
+    player.failError = new PlayerOperationError('unsupported-format', 'the native engine could not demux this source');
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValue(session('direct', '/media/s/cap/source.mp4', 'direct')),
+      stopPlayback: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities: { ...capabilities, directUrls: true } });
+    await expect(controller.start({ item, source })).rejects.toMatchObject({ code: 'unsupported-format' });
+    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
+    expect(backend.stopPlayback).toHaveBeenCalledWith('direct');
+  });
+
+  it('never recovers a direct-URL client into managed delivery after a late decoder failure', async () => {
+    const player = new FakePlayer();
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValue(session('direct', '/media/s/cap/source.mp4', 'direct')),
+      stopPlayback: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities: { ...capabilities, directUrls: true } });
+    await controller.start({ item, source });
+    player.snapshot = { ...player.snapshot, state: 'error', error: { code: 'unsupported-format', message: 'DEMUXER_ERROR_COULD_NOT_PARSE' } };
+    expect(await controller.recoverPlayback(player.snapshot)).toBe(false);
+    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries a direct-URL session source authorization into the open request', async () => {
+    const player = new FakePlayer();
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValue({
+        ...session('direct', 'https://provider.test/stream.mkv', 'direct'),
+        authorization: { cookie: 'provider-session=1', userAgent: 'VIPTV Desktop' },
+      }),
+      stopPlayback: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities: { ...capabilities, directUrls: true } });
+    await controller.start({ item, source });
+    expect(player.opened[0].authorization).toEqual({ cookie: 'provider-session=1', userAgent: 'VIPTV Desktop' });
+  });
+
+
 it('coalesces rapid managed seeks so a superseded replacement never holds provider capacity', async () => {
     const player = new FakePlayer();
     // Each managed session holds a provider connection permit. A seek that is

@@ -142,7 +142,7 @@ describe('delivery profile dispatch', () => {
     expect(VIZIO_DELIVERY_CAPABILITIES.directFiles).toBeUndefined();
     // Desktop: direct play only, with the original container allowed for the
     // native demuxer.
-    expect(TAURI_NATIVE_DELIVERY_CAPABILITIES).toMatchObject({ directPlay: true, directFiles: true });
+    expect(TAURI_NATIVE_DELIVERY_CAPABILITIES).toMatchObject({ directPlay: true, directFiles: true, directUrls: true });
   });
 
   it('measures the web profile through the browser probe and memoizes it', async () => {
