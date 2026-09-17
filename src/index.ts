@@ -1,6 +1,6 @@
 import { Html5FallbackAdapter } from './html5-fallback';
 import { TizenAvplayAdapter, type AvplayManager } from './tizen-avplay';
-import { TauriNativeAdapter } from './tauri-native';
+import { TauriNativeAdapter, resolveTauriVideoInvoker, type NativeVideoEngine } from './tauri-native';
 import type { HtmlMediaLike } from './vizio-html5';
 import { VizioHtml5Adapter } from './vizio-html5';
 import type { Player, PlayerPlatform } from './types';
@@ -18,6 +18,8 @@ export interface CreatePlayerOptions {
   readonly video?: HtmlMediaLike;
   readonly canvas?: HTMLCanvasElement;
   readonly avplay?: AvplayManager;
+  /** The native engine the desktop host requests; 'auto' follows the plugin's preference order. */
+  readonly engine?: NativeVideoEngine;
 }
 
 /** One factory keeps the React UI independent of the TV's playback engine. */
@@ -36,7 +38,7 @@ export function createPlayer(options: CreatePlayerOptions): Player {
       }
       // The default invoker rejects outside the Tauri runtime, so a browser
       // that somehow requests this platform fails honestly at construction.
-      return new TauriNativeAdapter(anchor);
+      return new TauriNativeAdapter(anchor, resolveTauriVideoInvoker(), { engine: options.engine });
     }
   }
 }

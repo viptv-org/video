@@ -82,6 +82,9 @@ export interface PlayerDiagnostics {
   readonly engine: 'mediabunny' | 'native-html' | 'hls.js' | 'avplay' | 'tauri-native';
   readonly transport: 'hls' | 'file';
   readonly networkTransport?: 'browser-proxy' | 'direct' | 'native-http';
+
+  /** The native engine serving a desktop session, e.g. 'mpv' or 'gstreamer'. */
+  readonly backend?: string;
   readonly videoCodec?: string;
   readonly audioCodec?: string;
   readonly width?: number;

@@ -8,6 +8,7 @@ import {
   timelineDuration,
   type OpenPlayerRequest,
   type PlayerCapabilities,
+  type PlayerDiagnostics,
   type PlayerErrorCode,
   type PlayerTime,
   type PlayerTrack,
@@ -36,6 +37,13 @@ const FIRST_FRAME_TIMEOUT_MS = 8000;
 
 export type NativeVideoPlatform = 'linux' | 'windows';
 
+/**
+ * The native playback engine a host may request. 'auto' follows the plugin's
+ * documented preference order — mpv first on Linux when its runtime was
+ * compiled — so hosts without an opinion get the engine the plugin prefers.
+ */
+export type NativeVideoEngine = 'auto' | 'mpv' | 'gstreamer';
+
 /** The host-side command surface of tauri-plugin-video, injectable for tests. */
 export interface TauriVideoInvoker {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
@@ -46,6 +54,8 @@ export interface NativeVideoDiagnostics {
   readonly crateName: string;
   readonly crateVersion: string;
   readonly platform: string;
+  /** The playback engines compiled into the build, in preference order. */
+  readonly engines?: readonly string[];
 }
 
 export interface NativeVideoTrack {
@@ -74,6 +84,9 @@ export interface NativeVideoSnapshot {
   readonly droppedFrames?: number;
   readonly measuredFps?: number;
   readonly hardwareBackend?: string;
+
+  /** The engine serving this snapshot, e.g. 'mpv' or 'gstreamer'. */
+  readonly backend?: string;
 }
 
 interface NativeWireError {
@@ -222,6 +235,16 @@ function hlsish(url: string): boolean {
   return /\.m3u8(?:[?#]|$)/i.test(url);
 }
 
+
+function nativeDiagnostics(url: string, backend?: string): PlayerDiagnostics {
+  return {
+    engine: 'tauri-native',
+    networkTransport: 'direct',
+    transport: hlsish(url) ? 'hls' : 'file',
+    ...(backend && backend.length > 0 ? { backend } : {}),
+  };
+}
+
 function engineDuration(snapshot: NativeVideoSnapshot | undefined): number | null {
   return snapshot && !snapshot.live && snapshot.durationSeconds > 0
     ? snapshot.durationSeconds
@@ -284,6 +307,8 @@ export class TauriNativeAdapter extends SessionPlayer {
   readonly capabilities = TAURI_NATIVE_PLAYER_CAPABILITIES;
   private readonly invoker: TauriVideoInvoker;
   private readonly platform: NativeVideoPlatform | undefined;
+  private readonly engine: NativeVideoEngine;
+  private nativeEngines?: readonly string[];
   private request?: OpenPlayerRequest;
   private sessionKey?: string;
   private native?: NativeVideoSnapshot;
@@ -309,11 +334,12 @@ export class TauriNativeAdapter extends SessionPlayer {
   constructor(
     private readonly anchor: HTMLVideoElement,
     invoker: TauriVideoInvoker = resolveTauriVideoInvoker(),
-    options: { platform?: NativeVideoPlatform } = {},
+    options: { platform?: NativeVideoPlatform; engine?: NativeVideoEngine } = {},
   ) {
     super();
     this.invoker = invoker;
     this.platform = options.platform ?? tauriNativePlatform();
+    this.engine = options.engine ?? 'auto';
   }
 
   async open(request: OpenPlayerRequest): Promise<void> {
@@ -327,11 +353,7 @@ export class TauriNativeAdapter extends SessionPlayer {
     this.observedTitleDuration = null;
     this.requestedPlaying = request.paused !== true;
     this.update(sessionId, {
-      diagnostics: {
-        engine: 'tauri-native',
-        networkTransport: 'direct',
-        transport: hlsish(request.url) ? 'hls' : 'file',
-      },
+      diagnostics: nativeDiagnostics(request.url),
       volume: { level: this.volume, muted: this.muted },
     });
     const sessionKey = newSessionKey();
@@ -360,29 +382,37 @@ export class TauriNativeAdapter extends SessionPlayer {
       }
       const layout = this.measureLayout();
       this.lastLayout = layout;
-      const snapshot = await this.invoker.invoke<NativeVideoSnapshot>(`${COMMAND}native_open`, {
-        payload: {
-          protocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
-          packageVersion: ADAPTER_PACKAGE_VERSION,
-          sessionKey,
-          uri: request.url,
-          x: layout.x,
-          y: layout.y,
-          width: layout.width,
-          height: layout.height,
-          scrollX: 0,
-          scrollY: 0,
-          autoplay: texture !== undefined || this.requestedPlaying,
-          volume: textureBootstrap ? 0 : this.volume,
-          muted: this.muted,
-          ...(request.authorization?.cookie ? { cookies: request.authorization.cookie } : {}),
-          ...(request.authorization?.userAgent ? { userAgent: request.authorization.userAgent } : {}),
-        },
-      });
+      const backend = this.resolveBackend();
+      const payload = {
+        protocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
+        packageVersion: ADAPTER_PACKAGE_VERSION,
+        sessionKey,
+        uri: request.url,
+        x: layout.x,
+        y: layout.y,
+        width: layout.width,
+        height: layout.height,
+        scrollX: 0,
+        scrollY: 0,
+        autoplay: texture !== undefined || this.requestedPlaying,
+        volume: textureBootstrap ? 0 : this.volume,
+        muted: this.muted,
+        ...(request.authorization?.cookie ? { cookies: request.authorization.cookie } : {}),
+        ...(request.authorization?.userAgent ? { userAgent: request.authorization.userAgent } : {}),
+        ...(backend !== undefined ? { backend } : {}),
+      };
+      const snapshot = await this.openNativeSession(sessionKey, payload, sessionId);
       if (!this.isCurrent(sessionId)) return;
       established = true;
       this.sessionKey = sessionKey;
       this.native = snapshot;
+
+      // The engine reports which backend actually serves the session; surface
+      // it in diagnostics so a host shows the running engine, not just the
+      // requested one.
+      this.update(sessionId, {
+        diagnostics: nativeDiagnostics(request.url, snapshot.backend),
+      });
       if (texture) {
         this.textureStream = await texture;
         this.anchor.srcObject = this.textureStream;
@@ -574,7 +604,54 @@ export class TauriNativeAdapter extends SessionPlayer {
         `The native video plugin reports protocol ${actual}; this adapter requires ${TAURI_VIDEO_PROTOCOL_VERSION}. Update the desktop app and tauri-plugin-video together.`,
       );
     }
+    this.nativeEngines = diagnostics.engines;
     this.protocolVerified = true;
+  }
+
+
+  /**
+   * Resolves the requested engine into the plugin's backend field. 'auto'
+   * follows the plugin's documented preference order; an explicit engine the
+   * diagnostics say is not compiled is not requested at all, so a stale
+   * persisted choice cannot fail every open while the running backend stays
+   * visible in diagnostics.
+   */
+  private resolveBackend(): string | undefined {
+    const engines = this.nativeEngines;
+    if (this.engine !== 'auto') {
+      return engines === undefined || engines.length === 0 || engines.includes(this.engine)
+        ? this.engine
+        : undefined;
+    }
+    return engines?.find(engine => engine.length > 0);
+  }
+
+  /**
+   * Opens the native session, retrying the exact same delivery once when the
+   * engine could not stand up its pipeline. A flaky provider that truncates
+   * its first response (playbin3 typefind "Stream doesn't contain enough
+   * data") recovers on a fresh engine session; only a repeated failure
+   * reaches the session controller's delivery escalation.
+   */
+  private async openNativeSession(
+    sessionKey: string,
+    payload: Record<string, unknown>,
+    sessionId: number,
+  ): Promise<NativeVideoSnapshot> {
+    try {
+      return await this.invoker.invoke<NativeVideoSnapshot>(`${COMMAND}native_open`, { payload });
+    } catch (cause) {
+      const error = nativeOperationError(
+        cause,
+        'connection-failed',
+        'The native video engine could not open the selected source.',
+      );
+      if (error.code !== 'unsupported-format' || !this.isCurrent(sessionId)) throw cause;
+      // Release whatever the failed attempt attached, then re-open the same
+      // request: the session key stays this session's correlation.
+      await this.closeSession(sessionKey).catch(() => undefined);
+      return await this.invoker.invoke<NativeVideoSnapshot>(`${COMMAND}native_open`, { payload });
+    }
   }
 
   private async control(action: string, value = 0, index = -1): Promise<NativeVideoSnapshot> {

@@ -5,6 +5,16 @@ Release numbering follows the
 
 ## Unreleased
 
+- Selectable native engines: `createPlayer({ platform: 'tauri', engine })`
+  requests 'mpv' or 'gstreamer' through the plugin's backend field, with
+  'auto' following the plugin's reported engine preference order, and the
+  running engine surfaces as `PlayerDiagnostics.backend` alongside
+  `NativeVideoDiagnostics.engines` and `NativeVideoSnapshot.backend`.
+- Retry a PIPELINE_FAILED native open once with the exact same delivery: a
+  flaky provider that truncates its first response (playbin3 typefind "Stream
+  doesn't contain enough data") gets a fresh engine session before the
+  failure reaches the session controller's delivery escalation.
+
 - Add canonical per-platform delivery profiles in `platform-profiles.ts`:
   `TIZEN_DELIVERY_CAPABILITIES` and `VIZIO_DELIVERY_CAPABILITIES`, the
   measured `webDeliveryCapabilities` wrapper with its managed-HLS gate, and

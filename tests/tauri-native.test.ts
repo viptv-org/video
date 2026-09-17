@@ -7,6 +7,7 @@ import {
   TauriNativeAdapter,
   tauriNativePlatform,
   type NativeVideoDiagnostics,
+  type NativeVideoEngine,
   type NativeVideoSnapshot,
   type NativeVideoTrack,
 } from '../src/tauri-native';
@@ -46,6 +47,9 @@ class FakeTauriVideoPlugin {
   };
   openSnapshot: NativeVideoSnapshot = baseSnapshot({ playing: true });
   openError: unknown;
+
+  /** Per-attempt open errors, consumed front-first; the persistent openError applies after the queue empties. */
+  openErrorQueue: unknown[] = [];
   controlError: unknown;
   statsSnapshot: NativeVideoSnapshot | undefined;
   statsError: unknown;
@@ -65,7 +69,8 @@ class FakeTauriVideoPlugin {
     if (command === 'plugin:video|native_open') {
       const payload = (args?.payload ?? {}) as Record<string, unknown>;
       this.openedPayloads.push(payload);
-      if (this.openError) throw this.openError;
+      const failure = this.openErrorQueue.length > 0 ? this.openErrorQueue.shift() : this.openError;
+      if (failure) throw failure;
       this.#playing = payload.autoplay === true;
       this.#current = 0;
       this.#tracks = this.openSnapshot.tracks;
@@ -115,9 +120,12 @@ class FakeTauriVideoPlugin {
   }
 }
 
-function createAdapter(plugin: FakeTauriVideoPlugin): { player: TauriNativeAdapter; anchor: HTMLVideoElement } {
+function createAdapter(
+  plugin: FakeTauriVideoPlugin,
+  options: { engine?: NativeVideoEngine } = {},
+): { player: TauriNativeAdapter; anchor: HTMLVideoElement } {
   const anchor = document.createElement('video');
-  return { player: new TauriNativeAdapter(anchor, plugin, { platform: 'linux' }), anchor };
+  return { player: new TauriNativeAdapter(anchor, plugin, { platform: 'linux', engine: options.engine }), anchor };
 }
 
 afterEach(() => {
@@ -269,14 +277,94 @@ describe('TauriNativeAdapter', () => {
 
   it('maps an open pipeline failure to an unsupported format for delivery escalation', async () => {
     const plugin = new FakeTauriVideoPlugin();
+    // A persistent pipeline failure: the bounded retry re-opens the same
+    // delivery once before the failure reaches the delivery escalation.
     plugin.openError = { code: 'PIPELINE_FAILED', message: 'no decoder for the selected stream' };
     const { player } = createAdapter(plugin);
 
     await expect(player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod' }))
       .rejects.toMatchObject({ code: 'unsupported-format' });
     expect(player.snapshot.error?.message).toBe('no decoder for the selected stream');
-    expect(plugin.closedKeys).toHaveLength(1);
+    expect(plugin.openedPayloads).toHaveLength(2);
+    // Both attempts release their engine state: the retry's release and the
+    // failed session's own close.
+    expect(plugin.closedKeys).toHaveLength(2);
   });
+
+  it('retries the same delivery once when the engine pipeline fails at open', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    // The provider truncated its first response; the fresh engine session
+    // receives the whole file.
+    plugin.openErrorQueue = [{ code: 'PIPELINE_FAILED', message: "Stream doesn't contain enough data" }];
+    const { player } = createAdapter(plugin);
+
+    await player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod' });
+
+    // The exact same request opened twice.
+    expect(plugin.openedPayloads).toHaveLength(2);
+    expect(plugin.openedPayloads[1]).toEqual(plugin.openedPayloads[0]);
+    // The failed attempt's engine state was released before the retry.
+    expect(plugin.closedKeys).toEqual([plugin.openedPayloads[0].sessionKey]);
+    expect(player.snapshot.state).toBe('playing');
+    await player.stop();
+  });
+
+  it('does not retry open failures that are not pipeline failures', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openError = { code: 'INVALID_REQUEST', message: 'the engine rejected the payload' };
+    const { player } = createAdapter(plugin);
+
+    await expect(player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod' }))
+      .rejects.toMatchObject({ code: 'prepare-failed' });
+    expect(plugin.openedPayloads).toHaveLength(1);
+  });
+
+  it('resolves the requested engine against the compiled engines', async () => {
+    const url = 'https://backend.example/media/direct.mp4';
+    // An explicit engine passes straight through, even against auto's order.
+    const explicit = new FakeTauriVideoPlugin();
+    explicit.diagnostics = { ...explicit.diagnostics, engines: ['mpv', 'gstreamer'] };
+    const explicitPlayer = createAdapter(explicit, { engine: 'gstreamer' }).player;
+    await explicitPlayer.open({ url, kind: 'vod' });
+    expect(explicit.openedPayloads[0].backend).toBe('gstreamer');
+    await explicitPlayer.stop();
+
+    // 'auto' follows the plugin's documented preference order.
+    const auto = new FakeTauriVideoPlugin();
+    auto.diagnostics = { ...auto.diagnostics, engines: ['mpv', 'gstreamer'] };
+    const autoPlayer = createAdapter(auto).player;
+    await autoPlayer.open({ url, kind: 'vod' });
+    expect(auto.openedPayloads[0].backend).toBe('mpv');
+    await autoPlayer.stop();
+
+    // An engine the build did not compile is not requested at all, so a
+    // stale persisted choice cannot fail every open.
+    const stale = new FakeTauriVideoPlugin();
+    stale.diagnostics = { ...stale.diagnostics, engines: ['gstreamer'] };
+    const stalePlayer = createAdapter(stale, { engine: 'mpv' }).player;
+    await stalePlayer.open({ url, kind: 'vod' });
+    expect('backend' in stale.openedPayloads[0]).toBe(false);
+    await stalePlayer.stop();
+
+    // A plugin that predates the engines report keeps the engine default.
+    const legacy = new FakeTauriVideoPlugin();
+    const legacyPlayer = createAdapter(legacy).player;
+    await legacyPlayer.open({ url, kind: 'vod' });
+    expect('backend' in legacy.openedPayloads[0]).toBe(false);
+    await legacyPlayer.stop();
+  });
+
+  it('reports the running engine backend in diagnostics', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openSnapshot = baseSnapshot({ playing: true, backend: 'mpv' });
+    const { player } = createAdapter(plugin);
+
+    await player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod' });
+
+    expect(player.snapshot.diagnostics?.backend).toBe('mpv');
+    await player.stop();
+  });
+
 
   it('maps a seek failure honestly', async () => {
     const plugin = new FakeTauriVideoPlugin();
