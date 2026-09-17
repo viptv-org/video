@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { cwd } from 'node:process'
 
 import typescript from '@rollup/plugin-typescript'
-import type { Plugin, RollupOptions } from 'rollup'
+import type { RollupOptions } from 'rollup'
 
 interface PackageManifest {
   dependencies?: Record<string, string>
@@ -14,25 +14,16 @@ const manifest = JSON.parse(
   readFileSync(join(cwd(), 'package.json'), 'utf8'),
 ) as PackageManifest
 
-const cssAsText: Plugin = {
-  name: 'css-as-text',
-  resolveId(source, importer) {
-    if (!importer || !source.endsWith('.css?raw')) return null
-    return resolve(dirname(importer), source.slice(0, -4))
-  },
-  transform(code, id) {
-    if (!id.endsWith('.css')) return null
-    return { code: `export default ${JSON.stringify(code)}`, map: null }
-  },
-}
+/** Scoped package names also import through subpaths (`@tauri-apps/api/core`). */
+const escape = (name: string) => name.replace(/[.+*?^${}()|[\]\\]/g, '\\$&')
+const externalNames = [
+  ...Object.keys(manifest.dependencies ?? {}),
+  ...Object.keys(manifest.peerDependencies ?? {}),
+]
+const externalPatterns = externalNames.map((name) => new RegExp(`^${escape(name)}(?:/.*)?$`))
 
 const config: RollupOptions = {
-  input: {
-    index: 'guest-js/index.ts',
-    controls: 'guest-js/controls.ts',
-    effect: 'guest-js/effect.ts',
-    react: 'react/index.tsx',
-  },
+  input: { index: 'src/index.ts' },
   output: {
     dir: 'dist-js',
     entryFileNames: '[name].js',
@@ -40,24 +31,14 @@ const config: RollupOptions = {
     sourcemap: true,
   },
   plugins: [
-    cssAsText,
     typescript({
       declaration: true,
       declarationDir: 'dist-js',
-      include: [
-        'guest-js/**/*.ts',
-        'react/**/*.ts',
-        'react/**/*.tsx',
-      ],
-      exclude: ['**/*.test.ts', '**/*.test.tsx'],
+      include: ['src/**/*.ts'],
+      exclude: ['**/*.test.ts'],
     }),
   ],
-  external: [
-    /^@get-air\/http(?:\/.*)?$/,
-    /^react(?:\/.*)?$/,
-    ...Object.keys(manifest.dependencies ?? {}),
-    ...Object.keys(manifest.peerDependencies ?? {}),
-  ],
+  external: externalPatterns,
 }
 
 export default config

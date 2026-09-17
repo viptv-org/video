@@ -8,47 +8,42 @@ web
 
 ## Users
 
-Air applications and viewers using browser-based playback on desktop, Samsung Tizen, LG webOS, and Vizio SmartCast televisions. Television viewers operate from several feet away with a directional remote rather than a pointer.
+VIPTV applications and viewers using browser-based playback on desktop, the
+Tauri desktop host, Samsung Tizen, and Vizio SmartCast televisions. Television
+viewers operate from several feet away with a directional remote rather than a
+pointer; the visible UI itself is owned by the applications, not this package.
 
 ## Product Purpose
 
-`@get-air/video` provides one controller API for loading media, playback, seeking, volume, fit, audio selection, subtitles, and telemetry across browser and television backends.
+`@viptv/video` is the canonical headless playback controller: one `Player`
+interface, the platform adapters, and the server session coordinator shared by
+every client that renders the tv-web UI.
 
 ## Positioning
 
-One stable controller survives source and backend changes while platform adapters retain their native playback path.
-
-## Operating Context
-
-The example player is both an integration sample and an on-device playback laboratory. It must expose enough state to verify controller input, duration, seeking, backend selection, buffering, audio, and subtitles on a real television.
+One stable controller survives source and delivery changes while platform
+adapters retain their native playback path. Applications select the platform
+explicitly; direct play and client capability checks come before any server
+conversion.
 
 ## Capabilities and Constraints
 
-- Playback UI must work without touch, hover, or a pointer.
-- Live channels must distinguish a non-seekable feed from a moving DVR window,
-  expose a legible live offset, and provide an explicit remote-operable Go Live action.
-- Vizio uses the platform HTML video pipeline; native and transcode paths are
-  supplied by explicit external adapters.
-- The authored television surface is 1920×1080 with overscan-safe margins.
-- Runtime source URLs may be supplied through query parameters for isolated device testing.
-
-## Brand Commitments
-
-The product is Air. The television interface inherits Air Horizon's black broadcast surface, chalk typography, and cyan focus signal.
-
-## Evidence on Hand
-
-- Working video controller, React, and native adapter integrations in this repository.
-- Existing Air television tokens and focus behavior in the sibling Air application.
-- Locally generated and staged media fixtures for deterministic testing.
+- Playback must work without touch, hover, or a pointer; the UI contract lives
+  in the applications and the design repository.
+- Live channels must distinguish a non-seekable feed from a moving DVR window;
+  a non-seekable channel does not offer seeking.
+- Vizio uses the platform HTML/HLS pipeline with managed server delivery; the
+  Tauri host plays natively with no server conversion.
+- The server-known title length is authoritative; a rolling managed window
+  never becomes the seek bar's duration.
 
 ## Product Principles
 
-- A remote action must produce immediate, visible feedback.
 - Playback state is more important than decorative chrome.
-- The active focus target is never ambiguous.
-- Unsupported platform capabilities are explained rather than silently ignored.
+- The active focus target is never ambiguous (owned by the application UI).
+- Unsupported platform capabilities fail honestly rather than degrade silently.
 
 ## Accessibility & Inclusion
 
-All essential actions are reachable with arrows and Enter, use large targets and readable type, and retain strong focus contrast at television distance.
+Essential player actions are reachable with arrows and Enter in the consuming
+UI; the controller exposes the state and track surfaces that require.

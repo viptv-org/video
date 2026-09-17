@@ -3,11 +3,30 @@
 Release numbering follows the
 [versioning and compatibility policy](VERSIONING.md).
 
-## Unreleased
+## 0.4.0
 
 - Remove the retired canvas/Blits custom-renderer entrypoint and
   `transparent-canvas` attachment mode. The supported presentation surface is
-  now an ordinary DOM video element, with the React wrapper built on top.
+  an ordinary DOM video element.
+- Rename the package `@get-air/video` → `@viptv/video` and point repository
+  metadata at `viptv-org/video`.
+- Move tv-web's player stack in as the canonical controller: the `Player`
+  types, `SessionPlayer`/`PlaybackSessionController`, browser capability
+  probing, and the MediaBunny/HTML5-fallback/Vizio/Tizen/Tauri-native
+  adapters, with the tv-web suite (8 files, 77 tests) moved alongside.
+- Delete the inherited get-air controller surface: `guest-js/` backends and
+  client, the React integration, controls, Effect bindings, and their docs.
+- Replace `Pick<TvApi, …>` with a structural `PlaybackBackend` port and typed
+  playback contract types (`PlaybackStart`, `PlaybackSessionView`,
+  `PlaybackMediaTrack`, `PlaybackCapabilities`); delivery-refusal escalation
+  keys on the port's documented error status instead of `TvApiError`.
+- `SessionStartIntent` is generic over the application's catalog item and
+  source types so apps keep their own richer types.
+- `exactResumeSource` stays with the application (tv-web's continuation
+  module): the rule is owned by the shared Rust core.
+- MediaBunny and its codec extensions, hls.js, and the Tauri API/HTTP plugins
+  are direct dependencies; vitest 3.2.4 with vite 6.1.0 keeps the test
+  transform aligned with the consuming application.
 
 ## 0.3.0
 

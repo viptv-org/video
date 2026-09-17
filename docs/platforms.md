@@ -2,76 +2,42 @@
 
 ## Explicit selection
 
-Air does not infer a playback engine. Select `html`, a registered native
-adapter such as `tauri`, or `transcode`. An ordered array is an explicit
-fallback contract, for example `['html', 'tauri', 'transcode']`.
+Applications select one platform through `createPlayer`. The controller never
+infers an engine: the host declares what it is (browser, Vizio receiver,
+Tizen, Tauri window), and the server's delivery matrix follows the capability
+profile the application sends.
 
-## Samsung Tizen
+## Web browser
 
-The `tizen` backend uses `window.webapis.avplay`. Load Samsung's WebAPI library
-in the TV application's `index.html`:
-
-```html
-<script src="$WEBAPIS/webapis/webapis.js"></script>
-```
-
-Remote media origins must also be allowed by the application's `config.xml`
-content security policy. Air creates and owns the companion
-`<object type="application/avplayer">` required by AVPlay while preserving the
-public `<video>` as the common controller and geometry anchor. The adapter maps
-its viewport rectangle into AVPlay's fixed 1920×1080 display coordinates.
-
-The adapter uses `prepareAsync` so media preparation does not block the UI
-thread. Samsung only allows full track enumeration after asynchronous
-preparation once playback is active, so the initially exposed tracks are the
-current streams; the complete audio/subtitle list is populated once playback
-becomes active.
-AVPlay accepts audio and text track selection, not video-track selection.
-Selecting no subtitle track uses `setSilentSubtitle(true)`.
-
-AVPlay owns a video plane, so the HTML video element acts as the geometry
-anchor. The platform API is a singleton, so a second Tizen attachment is
-rejected without disturbing the active controller. Dedicated
-`VideoSource.cookies` and `VideoSource.userAgent` values map to AVPlay's
-`COOKIE` and `USER_AGENT` streaming properties after `open()` and before
-preparation. Arbitrary headers, referrer overrides, custom TLS authorities, and
-DRM-session setup are not exposed by this adapter. Availability and UHD codec
-limits depend on the TV model and firmware.
-
-## webOS
-
-The `webos` backend uses the platform's `HTMLVideoElement` media pipeline.
-It keeps a distinct backend ID for diagnostics and future webOS-specific
-adapters. It does not claim playback-rate changes, programmatic audio-track
-selection, arbitrary zoom, or DRM-session setup. A host may configure EME/DRM
-outside this API. Codec, DRM, and 4K support depend on the model's media
-pipeline and must be qualified on target hardware. Unsupported playback-rate
-and zoom calls reject with `VideoFeatureUnavailableError`.
-
-The published JavaScript targets ES2022; this does not imply a minimum supported
-TV OS or model. Applications must either verify ES2022 support or transpile this
-package and its dependencies for every Tizen, webOS, and Vizio SmartCast engine
-they deploy. Platform media claims likewise require target-device qualification.
+MediaBunny (WebCodecs) is preferred behind a secure-context plus
+`VideoDecoder`/`AudioDecoder` gate with a bounded open timeout; the HTML5
+fallback uses native HLS, then hls.js/MSE. `probeBrowserPlaybackCapabilities`
+measures what this exact runtime can decode (canPlayType,
+`MediaCapabilities.decodingInfo`, MSE, WebCodecs).
 
 ## Vizio SmartCast
 
-The `vizio` backend likewise uses HTML media playback with a distinct runtime
-diagnostic ID, detected through the SmartCast user agent or `globalThis.VIZIO`.
-It is not a vendor-certified native SmartCast integration. Applications must
-validate their production codec, streaming, and UHD profile on representative
-models. The HTML-backed `setPlaybackRate` method delegates to the platform media
-element and can still reject values unsupported by a particular model.
+The `vizio` adapter uses the HTMLMediaElement pipeline with native HLS, then
+hls.js/MSE. SmartCast's old Chromium has no WebCodecs, so there is no
+MediaBunny path: Vizio stays on managed server delivery, and the adapter's
+capabilities declare no request headers and no audio-track selection.
 
-`suspendWhenHidden` is an adapter option rather than a universal DOM behavior.
-The Tauri adapter honors it; the built-in HTML and TV backends do
-not currently suspend playback solely because the geometry anchor is hidden.
+## Samsung Tizen
 
-## External/native platforms
+The `tizen` adapter drives AVPlay through an injected, narrow `AvplayManager`
+(`play`, `open`, `seek`, track selection, optional `setStreamingProperty` for
+cookies/User-Agent, optional `setDisplayRect`). The application loads
+Samsung's WebAPI library (`$WEBAPIS/webapis/webapis.js`) in its TV page and
+passes the manager at construction; remote media origins must be allowed by
+the application's `config.xml` content security policy.
 
-Core knows only the `VideoBackendAdapter` contract. A platform package can add
-an adapter without changing, bundling, or being detected by this repository.
-For Tauri, use `@get-air/video-tauri` and pass its adapter to
-`createVideoClient`.
+## Tauri desktop
 
-This split keeps ordinary web and TV bundles free of Rust bridge code while
-preserving the exact controller and fallback-chain semantics.
+The `tauri` adapter speaks the raw IPC protocol of `tauri-plugin-video`
+(`native_open`/`native_control`/`native_layout`/`native_stats`/`native_close`)
+through `@tauri-apps/api/core`, with a protocol-version handshake at open. On
+Linux the native surface renders under a DOM aperture the adapter keeps in
+sync; on Windows frames arrive as a WebView2 texture stream on the video
+element. The host's media and API requests route through
+`@tauri-apps/plugin-http` (`sessionMediaFetch` does this under
+`__TAURI_INTERNALS__`); playback is native with no server conversion.

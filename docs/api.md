@@ -1,198 +1,72 @@
 # API
 
-## Clients
+## Entry
 
-`attachVideo(element, options)` uses the built-in DOM/TV client.
-`createVideoClient({ adapters, http })` creates an isolated client with
-additional platform adapters or a custom Request transport.
+`@viptv/video` exports the whole controller surface from its root.
+
+## Creating a player
 
 ```ts
-interface VideoClient {
-  attach(
-    element: HTMLVideoElement,
-    options: AttachVideoOptions,
-  ): Promise<VideoController>
-}
+import { createPlayer } from '@viptv/video'
+
+const player = createPlayer({ platform: 'html5', video, canvas })
 ```
 
-Clients do not mutate global state. Pass the same client to imperative,
-React integrations.
+- `platform: 'html5'` — MediaBunny (WebCodecs) preferred with an HTML5
+  fallback; requires a `video` element (and a `canvas` for the MediaBunny
+  render path).
+- `platform: 'vizio'` — HTMLMediaElement with native HLS then hls.js/MSE;
+  requires a `video` element.
+- `platform: 'tizen'` — AVPlay native through an injected `avplay` manager
+  (`AvplayManager`), so the adapter is testable without a TV.
+- `platform: 'tauri'` — the native engine of `tauri-video-plugin` over raw
+  IPC; requires a `video` element and fails honestly outside the Tauri host.
 
-## Attachment options
-
-```ts
-interface AttachVideoOptions {
-  source: string | VideoSource
-  backend?: VideoBackend | readonly VideoBackend[]
-  fallbackBackends?: readonly VideoBackend[]
-  backendOptions?: VideoBackendOptions
-  http?: HttpTransport
-  suspendWhenHidden?: boolean
-  autoplay?: boolean
-  deviceProfile?: 'auto' | 'mobile' | 'tv' | 'desktop'
-  controlRegions?: Element | Iterable<Element>
-  subtitles?: readonly ExternalSubtitleTrack[]
-  signal?: AbortSignal
-}
-```
-
-`backend` is an ordered chain. Unavailable adapters are skipped; load failures
-continue to the next adapter. `fallbackBackends` is appended and de-duplicated.
-
-External adapter packages augment `VideoBackendOptionsMap` with their own
-strongly typed namespace.
-
-## Backend adapters
+## Player
 
 ```ts
-interface VideoBackendAdapter {
-  readonly id: string
-  readonly route?: 'html' | 'native' | 'transcode'
-  isAvailable(context: VideoRuntimeContext): boolean | Promise<boolean>
-  open(context: VideoBackendOpenContext): Promise<BackendVideoController>
-}
-```
-
-`open` returns the same internal controller contract implemented by built-in
-backends. The public client wraps it in a stable controller before returning.
-
-### Adapter-specific errors
-
-Adapters can extend the typed player error channel without making core depend
-on a platform package. Register the error type with module augmentation and
-mark each rejected instance explicitly:
-
-```ts
-import { markVideoPlayerError } from '@get-air/video'
-import { Schema } from 'effect'
-
-class AdapterProtocolError extends Schema.TaggedError<AdapterProtocolError>()(
-  'AdapterProtocolError',
-  { message: Schema.String },
-) {}
-
-declare module '@get-air/video' {
-  interface VideoPlayerErrorMap {
-    AdapterProtocolError: AdapterProtocolError
-  }
-}
-
-throw markVideoPlayerError(new AdapterProtocolError({
-  message: 'The adapter and native runtime use different protocols',
-}))
-```
-
-Marked errors retain their class, tag, and fields through both Promise and
-Effect clients, including controller operations. Unmarked or merely
-tag-shaped failures are normalized to `VideoLoadError`.
-
-## Controller
-
-```ts
-interface VideoController {
-  readonly element: HTMLVideoElement
-  readonly sessionId: string
+interface Player {
   readonly capabilities: PlayerCapabilities
-  readonly media: MediaInfo
-  readonly tracks: readonly MediaTrack[]
-
-  load(source: string | VideoSource, options?: VideoLoadOptions): Promise<void>
+  readonly snapshot: PlayerSnapshot
+  open(request: OpenPlayerRequest): Promise<void>
   play(): Promise<void>
-  pause(): void
+  pause(): Promise<void>
   seek(positionSeconds: number): Promise<void>
-  selectTrack(kind: TrackKind, trackId?: string): Promise<void>
-  setVolume(volume: number): Promise<void>
-  setPlaybackRate(rate: number): Promise<void>
-  setVideoFit(mode: 'fit' | 'cover' | 'stretch'): Promise<void>
-  setVideoZoom(scale: number): Promise<void>
-  stats(): Promise<SessionStats>
-  bufferedAhead(): number
-  playbackQuality(): PlaybackQuality
-  refreshLayout(): void
-  registerControls(target: Element | Iterable<Element>): () => void
-  destroy(): Promise<void>
+  stop(): Promise<void>
+  dispose(): Promise<void>
+  selectAudioTrack(trackId: string): Promise<void>
+  selectTextTrack(trackId: string | null): Promise<void>
+  setVolume?(level: number): Promise<void>
+  setMuted?(muted: boolean): Promise<void>
+  subscribe(listener: PlayerListener): () => void
 }
 ```
 
-`MediaInfo` distinguishes finite media, non-seekable live channels, and moving
-live DVR windows:
+`open` accepts an already-selected delivery URL with the server's timeline
+facts: `deliveryMode` ('direct' | 'managed'), `timelineOffsetSeconds`,
+`timelineDurationSeconds`, `adoptEngineDuration`, `startAtSeconds`, and an
+optional `authorization` (cookie/User-Agent) that adapters apply only when
+their engine supports it. Failures are typed `PlayerErrorCode` values; every
+operation outside a live session throws `invalid-state`.
+
+## Session controller
 
 ```ts
-interface MediaInfo {
-  durationSeconds?: number
-  seekable: boolean
-  seekableStartSeconds?: number
-  seekableEndSeconds?: number
-  live: boolean
-  // tracks, chapters, container...
-}
+const controller = new PlaybackSessionController({ player, backend, capabilities })
 ```
 
-Live media has no finite `durationSeconds`. When `seekable` is true, callers
-must clamp absolute seeks to the current start/end bounds because the window
-can move while playback continues.
+`backend` is a structural port — `startPlayback(request: PlaybackStart):
+Promise<PlaybackSessionView>` and `stopPlayback(id: string): Promise<void>` —
+satisfied by the application's API client. Delivery refusals are `Error`s
+carrying an HTTP-like `status` (0 means transport failure). The controller
+escalates status 0/406 and decoder failures through the managed ladder,
+restores the outgoing session when a candidate cannot open, and coalesces
+rapid managed seeks.
 
-`load` replaces the active backend session without replacing the public
-controller, DOM anchor, or event subscriptions. Because two renderers cannot
-safely own one anchor at once, replacement closes the previous backend first.
-If opening the replacement fails, other operations report a typed
-`VideoControllerStateError`; a later `load()` can recover the same controller.
+## Capability profiles
 
-## Events
-
-`on(type, listener)` returns an unsubscribe function. Supported events:
-
-- `timeupdate`
-- `bufferprogress`
-- `trackchange`
-- `backendchange`
-- `subtitlecuechange`
-- `error`
-
-## Capabilities
-
-`PlayerCapabilities` reports the active backend, container/codec policy, HDR,
-rate, volume, fit/zoom, track selection, custom headers, and frame-accurate
-seeking. `'platform'` means the runtime/decoder decides.
-
-`playbackRate: true` means `setPlaybackRate` delegates to the active backend;
-the platform may still reject a particular rate. `customHeaders` refers to the
-arbitrary `VideoSource.headers` map. A backend can support dedicated source
-properties without claiming arbitrary headers—for example, Tizen maps
-`cookies` and `userAgent` to AVPlay streaming properties while leaving
-`customHeaders: false`.
-
-## Effect entrypoint
-
-`@get-air/video/effect` exports:
-
-- `VideoPlayerService`
-- `VideoBackendRegistryService`
-- `layerVideoBackends`
-- `attachVideoEffect`
-- `EffectVideoController`
-- `VideoBackendUnavailableError`
-- `VideoControllerStateError`
-- `VideoFeatureUnavailableError`
-- `VideoLoadError`
-
-`attachVideoEffect` returns an `EffectVideoController`. Its `load`, playback,
-telemetry, metadata, controls, event, and destroy operations return Effects and
-retain the same stable-controller behavior as the Promise API:
-
-```ts
-const program = Effect.gen(function* () {
-  const player = yield* attachVideoEffect(anchor, {
-    source: movie,
-    backend: 'html',
-  })
-  yield* player.play()
-  yield* player.load(nextMovie)
-  return yield* player.stats()
-})
-```
-
-All public failures are `Schema.TaggedError` values. Platform adapters are
-provided as a registry layer; the Promise client executes this same Effect
-implementation and converts its error channel to ordinary thrown error objects
-at the JavaScript boundary.
+Adapters export per-platform delivery capability profiles
+(`VIZIO_HTML5_CAPABILITIES`, `TIZEN_AVPLAY_CAPABILITIES`,
+`TAURI_NATIVE_DELIVERY_CAPABILITIES`) for the application to send with its
+playback requests; `probeBrowserPlaybackCapabilities` produces the measured
+browser report.

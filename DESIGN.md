@@ -1,31 +1,57 @@
-# Air Video Design
+# VIPTV video design
 
-## Air Horizon television world
+## Role
 
-The Air player inherits Air's broadcast control-room language: a true-black field, edge-to-edge moving image, chalk-white information, cool slate secondary text, cyan live/progress signals, and a white focus frame. The interface avoids translucent glass, decorative gradients, and rounded floating cards.
+One headless playback seam for every VIPTV client that renders the shared tv-web
+UI: browsers, Vizio SmartCast, Samsung Tizen, and the Tauri desktop host. The
+package owns the `Player` interface, the adapters, and the session coordinator —
+never visible controls, the API client, or source selection. Applications pass
+an already-selected delivery URL; choosing a source and choosing a server
+delivery rung belong to the product and backend.
 
-## Composition
+## Player contract
 
-- Author at 1920×1080 with an 80px overscan-safe boundary.
-- Video occupies the dominant upper stage; transport and state form one grounded lower console.
-- Progress is a thin, high-contrast timeline with duration at its right edge.
-- Controls read left to right as rewind, play/pause, forward, audio, subtitles, and fit.
+- Synchronous `snapshot()` plus `subscribe(listener)` push; every listener sees
+  the current snapshot immediately.
+- A ten-state machine: idle, opening, ready, playing, paused, buffering, ended,
+  stopped, error, disposed.
+- Session-ID invalidation: `SessionPlayer.isCurrent` makes every stale engine
+  callback inert, so a superseded open cannot corrupt the new session.
+- Typed `PlayerErrorCode` failures with `PlayerOperationError`; adapters fail
+  honestly (`unsupported-operation`) where their engine lacks a capability
+  instead of degrading silently.
 
-## Interaction
+## Time and duration
 
-- Exactly one transport target autofocuses on launch.
-- Focus uses a 3px chalk frame plus a cyan surface; it never relies on scale alone.
-- Arrow navigation follows the visual row. Enter performs the named action.
-- Media remote keys work even when their corresponding button is not focused.
-- Every action updates the status line; failures name the unavailable capability.
+The server-known title length is authoritative; only an original-file engine
+may raise it (`timelineDuration`/`growOnlyDuration`). Managed output is a
+rolling window: its engine duration never becomes the seek bar's length, and
+buffered-end is published only when the engine reports a real lead. Live
+playback has no VOD seeking.
 
-## Type and color
+## Adapters
 
-- Use a workhorse sans face available to the television runtime.
-- Primary text: `#f4f7f8ff`; secondary: `#b7c0c6ff`; dim: `#7f8a92ff`.
-- Focus/progress: `#25c7d9ff`; warning: `#f3c766ff`; error: `#ff6b6bff`.
-- Background: `#000000ff`; control surface: `#11171cff`.
+- **html5** — MediaBunny (WebCodecs) preferred behind a secure-context plus
+  `VideoDecoder`/`AudioDecoder` gate with a bounded open timeout; then HTML
+  `<video>` with native HLS and an hls.js/MSE fallback. Session-scoped
+  `sessionMediaFetch` checks resource prefixes and routes through the Tauri
+  HTTP plugin under `__TAURI_INTERNALS__`.
+- **vizio** — HTMLMediaElement with native HLS, then hls.js/MSE. No WebCodecs
+  path: SmartCast's old Chromium cannot run MediaBunny, so Vizio stays on
+  managed server delivery.
+- **tizen** — AVPlay native through an injectable, narrow `AvplayManager`
+  (testable without a TV; cookies/User-Agent capability-gated on optional
+  `setStreamingProperty`).
+- **tauri** — the native engine of `tauri-video-plugin` over its raw IPC
+  protocol (protocol-version handshake, layout forwarding, stats polling), with
+  a direct-play-only capability profile and no server conversion.
 
-## Motion
+## Session coordination
 
-The moving picture is the authored motion. UI changes use short color/alpha transitions only; reduced-motion and older television runtimes lose no information.
+`PlaybackSessionController` coordinates the server's opaque playback session
+with one device adapter through a structural `PlaybackBackend` port. It never
+discovers or ranks a replacement source. Delivery refusals (HTTP-like status 0
+or 406) and decoder failures escalate the same selected source through the
+server's ladder — original delivery, managed output, forced conversion — while
+preserving position and pause intent, restoring the outgoing session when a
+candidate cannot open.
