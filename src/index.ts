@@ -11,6 +11,7 @@ export * from './tizen-avplay';
 export * from './vizio-html5';
 export * from './html5-fallback';
 export * from './tauri-native';
+export * from './platform-profiles';
 
 export interface CreatePlayerOptions {
   readonly platform: PlayerPlatform;

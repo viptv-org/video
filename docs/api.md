@@ -65,8 +65,12 @@ rapid managed seeks.
 
 ## Capability profiles
 
-Adapters export per-platform delivery capability profiles
-(`VIZIO_HTML5_CAPABILITIES`, `TIZEN_AVPLAY_CAPABILITIES`,
-`TAURI_NATIVE_DELIVERY_CAPABILITIES`) for the application to send with its
-playback requests; `probeBrowserPlaybackCapabilities` produces the measured
-browser report.
+Adapters declare their engine capability records
+(`VIZIO_HTML5_CAPABILITIES`, `TIZEN_AVPLAY_CAPABILITIES`), while
+`platform-profiles.ts` is the canonical declaration point for the delivery
+profiles a platform sends with its playback requests:
+`TIZEN_DELIVERY_CAPABILITIES`, `VIZIO_DELIVERY_CAPABILITIES`, the
+direct-play-only `TAURI_NATIVE_DELIVERY_CAPABILITIES`, and the measured
+`webDeliveryCapabilities` browser report with its managed-HLS gate.
+`deliveryCapabilitiesFor(platform)` resolves the profile for an entry point;
+TV engines and the Tauri host never consult a browser decoder probe.

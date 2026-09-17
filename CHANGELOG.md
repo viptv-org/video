@@ -3,6 +3,14 @@
 Release numbering follows the
 [versioning and compatibility policy](VERSIONING.md).
 
+## Unreleased
+
+- Add canonical per-platform delivery profiles in `platform-profiles.ts`:
+  `TIZEN_DELIVERY_CAPABILITIES` and `VIZIO_DELIVERY_CAPABILITIES`, the
+  measured `webDeliveryCapabilities` wrapper with its managed-HLS gate, and
+  the `deliveryCapabilitiesFor(platform)` dispatch for platform entry
+  points.
+
 ## 0.4.0
 
 - Remove the retired canvas/Blits custom-renderer entrypoint and
