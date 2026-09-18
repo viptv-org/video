@@ -504,8 +504,13 @@ export class TauriNativeAdapter extends SessionPlayer {
         // dispatching it makes the origin replay the beginning instead.
         const maximum = native.seekableEndSeconds;
         if (maximum === undefined || !Number.isFinite(maximum) || target < minimum || target > maximum) {
-          this.throwOperation(sessionId, 'seek-failed',
-            'This stream cannot seek there: the origin does not support seeking and the engine has not buffered that range.');
+          // A refusal is an operation failure, not a session failure: the
+          // engine keeps playing, and a sticky session error would re-pop
+          // the error surface on every poll beat.
+          throw new PlayerOperationError(
+            'seek-failed',
+            'This stream cannot seek there: the origin does not support seeking and the engine has not buffered that range.',
+          );
         }
       } else {
         // Seekable media: the engine seeks through the origin directly;
@@ -523,8 +528,13 @@ export class TauriNativeAdapter extends SessionPlayer {
       if (!this.isCurrent(sessionId)) return;
       const landed = snapshot.currentTimeSeconds;
       if (landed + restartToleranceSeconds < target && landed + restartToleranceSeconds < before) {
-        this.throwOperation(sessionId, 'seek-failed',
-          'The stream replayed from its beginning instead of seeking; the origin cannot serve that position.');
+        // The engine restarted the stream instead of landing the seek; it
+        // is still playing, so this reaches the caller without failing the
+        // session.
+        throw new PlayerOperationError(
+          'seek-failed',
+          'The stream replayed from its beginning instead of seeking; the origin cannot serve that position.',
+        );
       }
       this.publishSnapshot(sessionId, snapshot);
     } catch (cause) {

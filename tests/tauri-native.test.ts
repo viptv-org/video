@@ -248,6 +248,9 @@ describe('TauriNativeAdapter', () => {
     // origin replay the beginning instead of landing the target.
     await expect(player.seek(120)).rejects.toMatchObject({ code: 'seek-failed' });
     expect(plugin.controls).toHaveLength(1);
+    // The session stays healthy; the refusal is not a session failure.
+    expect(player.snapshot.state).toBe('playing');
+    expect(player.snapshot.error).toBeNull();
     await player.stop();
   });
 
@@ -259,8 +262,14 @@ describe('TauriNativeAdapter', () => {
     // the seek's range request by replaying the stream from the beginning.
     plugin.seekReplaysFromBeginning = true;
 
-    await expect(player.seek(90)).rejects.toMatchObject({ code: 'seek-failed' });
-    expect(player.snapshot.error?.message).toContain('replayed');
+    await expect(player.seek(90)).rejects.toMatchObject({
+      code: 'seek-failed',
+      message: expect.stringContaining('replayed'),
+    });
+    // The engine keeps playing: a failed seek is an operation failure, not
+    // a session failure, so the error cannot loop the UI every poll.
+    expect(player.snapshot.state).toBe('playing');
+    expect(player.snapshot.error).toBeNull();
     // The seek was dispatched to the engine; the origin failed it, not the adapter.
     expect(plugin.controls.some(control => control.action === 'seek' && control.value === 90)).toBe(true);
     await player.stop();
