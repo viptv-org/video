@@ -158,6 +158,7 @@ describe('TauriNativeAdapter', () => {
       autoplay: true,
       volume: 1,
       muted: false,
+      startAtSeconds: 0,
     });
     expect(player.snapshot.state).toBe('playing');
     expect(player.snapshot.diagnostics).toMatchObject({
@@ -232,6 +233,17 @@ describe('TauriNativeAdapter', () => {
     await player.stop();
   });
 
+  it('closes the native session when the player stops', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod' });
+    const sessionKey = plugin.openedPayloads[0]!.sessionKey as string;
+
+    await player.stop();
+
+    expect(plugin.closedKeys).toEqual([sessionKey]);
+  });
+
   it('opens paused at a start position and honors managed timeline offsets', async () => {
     const plugin = new FakeTauriVideoPlugin();
     const { player } = createAdapter(plugin);
@@ -244,7 +256,9 @@ describe('TauriNativeAdapter', () => {
       timelineDurationSeconds: 100,
     });
 
-    expect(plugin.openedPayloads[0]).toMatchObject({ autoplay: false, volume: 1 });
+    // The engine opens at the requested position (its start property)
+    // instead of playing from zero and seeking afterwards.
+    expect(plugin.openedPayloads[0]).toMatchObject({ autoplay: false, volume: 1, startAtSeconds: 30 });
     expect(last(plugin.controls)).toMatchObject({ action: 'seek', value: 30 });
     expect(player.snapshot.state).toBe('paused');
     expect(player.snapshot.time.positionSeconds).toBe(55);

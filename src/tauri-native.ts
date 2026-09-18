@@ -388,6 +388,7 @@ export class TauriNativeAdapter extends SessionPlayer {
         packageVersion: ADAPTER_PACKAGE_VERSION,
         sessionKey,
         uri: request.url,
+        startAtSeconds: Math.max(0, request.startAtSeconds ?? 0),
         x: layout.x,
         y: layout.y,
         width: layout.width,
