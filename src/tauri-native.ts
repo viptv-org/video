@@ -498,15 +498,37 @@ export class TauriNativeAdapter extends SessionPlayer {
     let target = boundedPosition(positionSeconds - this.timelineOffsetSeconds, duration);
     if (native) {
       const minimum = Math.max(0, native.seekableStartSeconds ?? 0);
-      const maximum = native.seekableEndSeconds ?? duration ?? undefined;
-      if (maximum !== undefined && Number.isFinite(maximum)) target = Math.min(target, Math.max(minimum, maximum));
-      target = Math.max(target, minimum);
+      if (native.seekable === false) {
+        // Unseekable media: only the engine's reported window (the demuxer
+        // cache) can serve a seek. A target beyond it must refuse honestly;
+        // dispatching it makes the origin replay the beginning instead.
+        const maximum = native.seekableEndSeconds;
+        if (maximum === undefined || !Number.isFinite(maximum) || target < minimum || target > maximum) {
+          this.throwOperation(sessionId, 'seek-failed',
+            'This stream cannot seek there: the origin does not support seeking and the engine has not buffered that range.');
+        }
+      } else {
+        // Seekable media: the engine seeks through the origin directly;
+        // only the title bounds apply.
+        target = Math.max(target, minimum);
+      }
     }
+    const before = native?.currentTimeSeconds ?? 0;
+    // A lying origin answers the seek's range request by replaying the
+    // stream from the beginning: the position lands far below both the
+    // target and the pre-seek position instead of near the target.
+    const restartToleranceSeconds = 2;
     try {
       const snapshot = this.acceptSnapshot(await this.control('seek', target));
       if (!this.isCurrent(sessionId)) return;
+      const landed = snapshot.currentTimeSeconds;
+      if (landed + restartToleranceSeconds < target && landed + restartToleranceSeconds < before) {
+        this.throwOperation(sessionId, 'seek-failed',
+          'The stream replayed from its beginning instead of seeking; the origin cannot serve that position.');
+      }
       this.publishSnapshot(sessionId, snapshot);
     } catch (cause) {
+      if (cause instanceof PlayerOperationError) throw cause;
       this.throwOperation(sessionId, 'seek-failed', 'The native engine could not seek the selected source.', cause);
     }
   }
@@ -737,7 +759,7 @@ export class TauriNativeAdapter extends SessionPlayer {
     return track.index;
   }
 
-  private throwOperation(sessionId: number, code: PlayerErrorCode, message: string, cause: unknown): never {
+  private throwOperation(sessionId: number, code: PlayerErrorCode, message: string, cause?: unknown): never {
     const error = cause instanceof PlayerOperationError
       ? cause
       : nativeOperationError(cause, code, message);

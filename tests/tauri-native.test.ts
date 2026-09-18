@@ -62,6 +62,8 @@ class FakeTauriVideoPlugin {
   #tracks: readonly NativeVideoTrack[] = baseSnapshot().tracks;
 
   readonly commands: string[] = [];
+  /** When set, the engine answers seeks by replaying from ~0: an origin that cannot serve range requests. */
+  seekReplaysFromBeginning = false;
 
   async invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
     this.commands.push(command);
@@ -101,7 +103,7 @@ class FakeTauriVideoPlugin {
   #apply(action: string, value: number, index: number): void {
     if (action === 'play') this.#playing = true;
     else if (action === 'pause') this.#playing = false;
-    else if (action === 'seek') this.#current = value;
+    else if (action === 'seek') this.#current = this.seekReplaysFromBeginning ? 1.0 : value;
     else if (action === 'track') {
       this.#tracks = this.#tracks.map(track => track.index === index ? { ...track, selected: true } : track);
     } else if (action === 'deselectTrack') {
@@ -230,6 +232,37 @@ describe('TauriNativeAdapter', () => {
     await player.seek(120);
     expect(last(plugin.controls)).toMatchObject({ action: 'seek', value: 120 });
     expect(player.snapshot.time.positionSeconds).toBe(120);
+    await player.stop();
+  });
+
+  it('refuses seeks outside the reported window on unseekable media instead of replaying the beginning', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openSnapshot = baseSnapshot({ playing: true, seekable: false, seekableEndSeconds: 4 });
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/media/unseekable.mp4', kind: 'vod' });
+
+    // Inside the engine's window (mpv's demuxer cache): the seek still goes.
+    await player.seek(2);
+    expect(last(plugin.controls)).toMatchObject({ action: 'seek', value: 2 });
+    // Beyond it: an honest refusal — dispatching the seek would make the
+    // origin replay the beginning instead of landing the target.
+    await expect(player.seek(120)).rejects.toMatchObject({ code: 'seek-failed' });
+    expect(plugin.controls).toHaveLength(1);
+    await player.stop();
+  });
+
+  it('reports an honest failure when the origin replays the beginning instead of landing the seek', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod', startAtSeconds: 30 });
+    // The origin starts lying only after playback is underway: it answers
+    // the seek's range request by replaying the stream from the beginning.
+    plugin.seekReplaysFromBeginning = true;
+
+    await expect(player.seek(90)).rejects.toMatchObject({ code: 'seek-failed' });
+    expect(player.snapshot.error?.message).toContain('replayed');
+    // The seek was dispatched to the engine; the origin failed it, not the adapter.
+    expect(plugin.controls.some(control => control.action === 'seek' && control.value === 90)).toBe(true);
     await player.stop();
   });
 
