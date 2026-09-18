@@ -491,9 +491,8 @@ export class TauriNativeAdapter extends SessionPlayer {
       throw new PlayerOperationError('seek-failed', 'Seek position must be a non-negative number.');
     }
     const native = this.native;
-    if (native?.seekable === false) {
-      throw new PlayerOperationError('unsupported-operation', 'The active media does not expose a seekable window.');
-    }
+    // The engine is the authority: it reports refusal honestly, and mpv can
+    // still serve seeks within its demuxer cache for unseekable media.
     const duration = engineDuration(native);
     let target = boundedPosition(positionSeconds - this.timelineOffsetSeconds, duration);
     if (native) {
@@ -704,6 +703,7 @@ export class TauriNativeAdapter extends SessionPlayer {
       positionSeconds: position,
       durationSeconds: this.observedTitleDuration,
       bufferedEndSeconds: bufferedEnd,
+      seekable: snapshot.seekable,
     };
   }
 

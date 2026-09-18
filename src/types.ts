@@ -59,6 +59,12 @@ export interface PlayerTime {
    * omitted when the engine cannot report it; sessions never fake it.
    */
   readonly bufferedEndSeconds?: number | null;
+  /**
+   * False when the engine reports the loaded media as unseekable, e.g. a VOD
+   * from an origin without range support. Omitted when the engine does not
+   * track it; the duration gates seeking as before.
+   */
+  readonly seekable?: boolean;
 }
 
 export type PlayerErrorCode =

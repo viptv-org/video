@@ -217,6 +217,21 @@ describe('TauriNativeAdapter', () => {
     await player.stop();
   });
 
+  it('publishes engine seekability and still attempts seeks on unseekable media', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openSnapshot = baseSnapshot({ playing: true, seekable: false });
+    const { player } = createAdapter(plugin);
+    // A VOD from an origin without range support: the engine reads the
+    // duration from the container but cannot seek the stream.
+    await player.open({ url: 'https://backend.example/media/unseekable.mp4', kind: 'vod' });
+
+    expect(player.snapshot.time.seekable).toBe(false);
+    await player.seek(120);
+    expect(last(plugin.controls)).toMatchObject({ action: 'seek', value: 120 });
+    expect(player.snapshot.time.positionSeconds).toBe(120);
+    await player.stop();
+  });
+
   it('opens paused at a start position and honors managed timeline offsets', async () => {
     const plugin = new FakeTauriVideoPlugin();
     const { player } = createAdapter(plugin);
