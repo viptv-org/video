@@ -1,114 +1,22 @@
 import {
   PlayerOperationError,
-  EMPTY_TRACKS,
-  IDLE_SNAPSHOT,
-  type PlaybackBackendError,
   type PlaybackCapabilities,
-  type PlaybackKind,
   type PlaybackSessionView,
   type PlaybackStart,
   type Player,
-  type PlayerFailure,
-  type PlayerListener,
   type PlayerSnapshot,
-  type PlayerState,
-  type PlayerTime,
-  type PlayerTracks,
 } from './types';
+import {
+  adapterRequest,
+  asError,
+  escalatePreparation,
+  itemKind,
+  playbackRequest,
+  playerState,
+  recoveryRequest,
+} from './session-request';
 
-/** Internal session gate: adapters call `isCurrent` from every async callback. */
-export abstract class SessionPlayer implements Player {
-  abstract readonly capabilities: Player['capabilities'];
-
-  private listeners = new Set<PlayerListener>();
-  private currentSession = 0;
-  private nextSession = 0;
-  private currentSnapshot: PlayerSnapshot = IDLE_SNAPSHOT;
-
-  get snapshot(): PlayerSnapshot {
-    return this.currentSnapshot;
-  }
-
-  subscribe(listener: PlayerListener): () => void {
-    this.listeners.add(listener);
-    listener(this.currentSnapshot);
-    return () => this.listeners.delete(listener);
-  }
-
-  protected startSession(kind: PlaybackKind): number {
-    const sessionId = ++this.nextSession;
-    this.currentSession = sessionId;
-    this.publish({
-      sessionId,
-      state: 'opening',
-      kind,
-      time: { positionSeconds: 0, durationSeconds: null },
-      tracks: EMPTY_TRACKS,
-      error: null,
-    });
-    return sessionId;
-  }
-
-  protected isCurrent(sessionId: number): boolean {
-    return this.currentSession === sessionId;
-  }
-
-  /** An operation outside a live session is a programming error, not a failure. */
-  protected activeSessionOrThrow(): number {
-    if (this.snapshot.sessionId === 0 || !this.isCurrent(this.snapshot.sessionId)) {
-      throw new PlayerOperationError('invalid-state', 'No active playback session.');
-    }
-    return this.snapshot.sessionId;
-  }
-
-  /** Makes every previous callback inert. */
-  protected invalidateSession(): void {
-    this.currentSession = 0;
-  }
-
-  protected update(sessionId: number, patch: {
-    diagnostics?: PlayerSnapshot['diagnostics'];
-    volume?: PlayerSnapshot['volume'];
-    state?: PlayerState;
-    time?: PlayerTime;
-    tracks?: PlayerTracks;
-    error?: PlayerFailure | null;
-  }): void {
-    if (!this.isCurrent(sessionId)) return;
-    this.publish({ ...this.currentSnapshot, ...patch });
-  }
-
-  protected terminal(state: Extract<PlayerState, 'stopped' | 'disposed'>): void {
-    const sessionId = ++this.nextSession;
-    this.currentSession = 0;
-    this.publish({
-      sessionId,
-      state,
-      kind: null,
-      time: { positionSeconds: 0, durationSeconds: null },
-      tracks: EMPTY_TRACKS,
-      error: null,
-    });
-  }
-
-  protected fail(sessionId: number, error: PlayerFailure): void {
-    this.update(sessionId, { state: 'error', error });
-  }
-
-  private publish(snapshot: PlayerSnapshot): void {
-    this.currentSnapshot = snapshot;
-    for (const listener of this.listeners) listener(snapshot);
-  }
-
-  abstract open(request: Parameters<Player['open']>[0]): Promise<void>;
-  abstract play(): Promise<void>;
-  abstract pause(): Promise<void>;
-  abstract seek(positionSeconds: number): Promise<void>;
-  abstract stop(): Promise<void>;
-  abstract dispose(): Promise<void>;
-  abstract selectAudioTrack(trackId: string): Promise<void>;
-  abstract selectTextTrack(trackId: string | null): Promise<void>;
-}
+export * from './session-player';
 
 /**
  * The catalog identity the controller needs to start playback. Applications
@@ -514,76 +422,4 @@ export class PlaybackSessionController<
     this.currentSnapshot = snapshot;
     for (const listener of this.listeners) listener(snapshot);
   }
-}
-
-function playbackRequest(intent: SessionStartIntent, capabilities: PlaybackCapabilities, position: number): PlaybackStart {
-  if (intent.item.type === 'live') return { channelId: intent.item.id, position, capabilities };
-  if (!intent.source) throw new Error('VOD playback requires an explicit source.');
-  return { streamId: intent.source.id, position, capabilities };
-}
-
-function adapterRequest(session: PlaybackSessionView, kind: PlaybackKind, position: number, paused: boolean): Parameters<Player['open']>[0] {
-  const direct = session.mode === 'direct';
-  const deliveryStart = direct ? 0 : Math.max(0, session.position);
-  return {
-    url: session.url,
-    kind,
-    startAtSeconds: direct ? position : Math.max(0, position - deliveryStart),
-    timelineOffsetSeconds: deliveryStart,
-    // A managed delivery is a rolling window; only the session knows how long
-    // the title is. Direct original files may refine it with their own length.
-    timelineDurationSeconds: kind === 'live' || !(session.duration > 0) ? undefined : session.duration,
-    adoptEngineDuration: direct,
-    deliveryMode: direct ? 'direct' : 'managed',
-    deliveryFormat: session.format,
-    paused,
-    authorization: session.authorization,
-  };
-}
-
-function itemKind(item: PlaybackIntentItem): PlaybackKind {
-  return item.type === 'live' ? 'live' : 'vod';
-}
-
-function playerState(player: Player): Extract<PlaybackControllerState, 'playing' | 'opening' | 'error'> {
-  return player.snapshot.state === 'paused' ? 'playing' : player.snapshot.state === 'error' ? 'error' : 'playing';
-}
-
-function asError(cause: unknown): Error {
-  return cause instanceof Error ? cause : new Error('Playback operation failed.');
-}
-
-/** The playback port reports refusals as Errors carrying an HTTP-like status. */
-function refusalStatus(error: unknown): number | undefined {
-  if (!(error instanceof Error)) return undefined;
-  const { status } = error as Partial<PlaybackBackendError>;
-  return typeof status === 'number' ? status : undefined;
-}
-
-/**
- * A delivery refusal is answered with the next delivery rung for the same
- * source: original delivery, then managed output, then a forced transcode.
- * Only a network failure (0) or the server's delivery refusal (406) escalates;
- * validation (400) and every other answer keeps its own meaning.
- */
-function escalatePreparation(request: PlaybackStart, error: unknown): PlaybackStart | undefined {
-  const status = refusalStatus(error);
-  if (status !== 0 && status !== 406) return undefined;
-  if (!request.managedOnly) return { ...request, managedOnly: true };
-  if (!request.forceTranscode) return { ...request, managedOnly: true, forceTranscode: true };
-  return undefined;
-}
-
-/** Keep the selected source while escalating only after the cheaper rung fails. */
-function recoveryRequest(
-  session: PlaybackSessionView,
-  request: PlaybackStart,
-  code: PlayerFailure['code'],
-): PlaybackStart | undefined {
-  if (code !== 'unsupported-format') return undefined;
-  if (session.mode === 'direct' && !request.managedOnly)
-    return { ...request, managedOnly: true };
-  if (session.mode !== 'direct' && !request.forceTranscode)
-    return { ...request, managedOnly: true, forceTranscode: true };
-  return undefined;
 }

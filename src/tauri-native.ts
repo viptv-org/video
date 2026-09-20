@@ -1,19 +1,39 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { PlaybackCapabilities } from './types';
 import { SessionPlayer } from './session';
+import { NativeAperture, type NativeLayout } from './tauri-native/aperture';
+import { TAURI_NATIVE_PLAYER_CAPABILITIES } from './tauri-native/capabilities';
+import type {
+  NativeVideoDiagnostics,
+  NativeVideoEngine,
+  NativeVideoPlatform,
+  NativeVideoSnapshot,
+  TauriVideoInvoker,
+} from './tauri-native/types';
 import {
-  PlayerOperationError,
   boundedPosition,
   growOnlyDuration,
   timelineDuration,
+  PlayerOperationError,
   type OpenPlayerRequest,
-  type PlayerCapabilities,
-  type PlayerDiagnostics,
   type PlayerErrorCode,
   type PlayerTime,
-  type PlayerTrack,
-  type PlayerTracks,
 } from './types';
+import {
+  delay,
+  engineDuration,
+  hasEnded,
+  nativeDiagnostics,
+  nativeOperationError,
+  newSessionKey,
+  nonNegative,
+  sameLayout,
+  selectedCodec,
+  tracksFromNative,
+  webView2TextureStream,
+} from './tauri-native/wire';
+
+export * from './tauri-native/types';
+export * from './tauri-native/capabilities';
 
 /**
  * The desktop playback seam. It implements the same Player contract as the TV
@@ -35,65 +55,6 @@ const ADAPTER_PACKAGE_VERSION = 'viptv-tv-web-tauri-native';
 const COMMAND = 'plugin:video|';
 const FIRST_FRAME_TIMEOUT_MS = 8000;
 
-export type NativeVideoPlatform = 'linux' | 'windows';
-
-/**
- * The native playback engine a host may request. 'auto' follows the plugin's
- * documented preference order — mpv first on Linux when its runtime was
- * compiled — so hosts without an opinion get the engine the plugin prefers.
- */
-export type NativeVideoEngine = 'auto' | 'mpv' | 'gstreamer';
-
-/** The host-side command surface of tauri-plugin-video, injectable for tests. */
-export interface TauriVideoInvoker {
-  invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
-}
-
-export interface NativeVideoDiagnostics {
-  readonly protocolVersion: number;
-  readonly crateName: string;
-  readonly crateVersion: string;
-  readonly platform: string;
-  /** The playback engines compiled into the build, in preference order. */
-  readonly engines?: readonly string[];
-}
-
-export interface NativeVideoTrack {
-  readonly id: string;
-  readonly index: number;
-  readonly kind: 'video' | 'audio' | 'subtitle';
-  readonly language: string;
-  readonly label: string;
-  readonly codec: string;
-  readonly selected: boolean;
-}
-
-export interface NativeVideoSnapshot {
-  readonly durationSeconds: number;
-  readonly currentTimeSeconds: number;
-  readonly bufferedSeconds: number;
-  readonly live?: boolean;
-  readonly seekable?: boolean;
-  readonly seekableStartSeconds?: number;
-  readonly seekableEndSeconds?: number;
-  readonly playing: boolean;
-  readonly videoWidth: number;
-  readonly videoHeight: number;
-  readonly tracks: readonly NativeVideoTrack[];
-  readonly presentedFrames?: number;
-  readonly droppedFrames?: number;
-  readonly measuredFps?: number;
-  readonly hardwareBackend?: string;
-
-  /** The engine serving this snapshot, e.g. 'mpv' or 'gstreamer'. */
-  readonly backend?: string;
-}
-
-interface NativeWireError {
-  readonly code: string;
-  readonly message: string;
-}
-
 export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
@@ -113,187 +74,6 @@ export function tauriNativePlatform(): NativeVideoPlatform | undefined {
   if (/Windows/i.test(navigator.userAgent)) return 'windows';
   if (/Linux|X11/i.test(navigator.userAgent)) return 'linux';
   return undefined;
-}
-
-export const TAURI_NATIVE_PLAYER_CAPABILITIES: PlayerCapabilities = {
-  platform: 'tauri',
-  engine: 'tauri-plugin-video (native GStreamer)',
-  directNative: 'supported',
-  adaptiveStreaming: 'supported',
-  drm: 'unsupported',
-  canSetVolume: true,
-  canPause: true,
-  canSeek: true,
-  canSelectAudioTrack: true,
-  canSelectTextTrack: true,
-  canDisableTextTrack: true,
-  canUseCookies: true,
-  canUseUserAgent: true,
-  limitations: [
-    'Native engine, codec and HDR support are runtime facts of the installed GStreamer build; the delivery profile only declares what the engine is expected to play.',
-    'The native command protocol exposes no playback-rate change and no buffering signal; neither is reported or emulated.',
-    'Cookies and a user agent are engine request properties, not arbitrary header support.',
-    'Live windows are playable but expose no VOD seek bar, matching the other adapters.',
-  ],
-};
-
-/**
- * The desktop no-transcode delivery profile handed to the backend's session
- * ladder: a broad native codec and container set with direct delivery
- * preferred. The server's own container, single-stream and HDR rules still
- * decide the rung; this client never requests managed-only or forced output.
- */
-export const TAURI_NATIVE_DELIVERY_CAPABILITIES: PlaybackCapabilities = {
-  maxWidth: 3840,
-  maxHeight: 2160,
-  h264: true,
-  hevc: true,
-  aac: true,
-  hevcSdr: true,
-  directPlay: true,
-  directUrls: true,
-  directMp4: true,
-  directHls: true,
-  directFiles: true,
-  directVideoCodecs: ['avc', 'hevc', 'vp8', 'vp9', 'av1', 'mpeg2video', 'mpeg4', 'theora', 'prores', 'mjpeg'],
-  directAudioCodecs: ['aac', 'opus', 'mp3', 'vorbis', 'flac', 'ac3', 'eac3', 'dts', 'truehd', 'pcm'],
-};
-
-interface NativeLayout {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-}
-
-const LAYOUT_VARIABLES = [
-  '--tauri-native-video-left',
-  '--tauri-native-video-top',
-  '--tauri-native-video-right',
-  '--tauri-native-video-bottom',
-  '--tauri-native-video-width',
-  '--tauri-native-video-height',
-] as const;
-
-let nativeSessionSequence = 0;
-
-interface WebView2TextureStreamApi {
-  getTextureStream(streamId: string): Promise<MediaStream>;
-}
-
-function webView2TextureStream(): WebView2TextureStreamApi | undefined {
-  const scope = globalThis as typeof globalThis & {
-    chrome?: { webview?: Partial<WebView2TextureStreamApi> };
-  };
-  const getTextureStream = scope.chrome?.webview?.getTextureStream;
-  return typeof getTextureStream === 'function'
-    ? { getTextureStream: getTextureStream.bind(scope.chrome?.webview) }
-    : undefined;
-}
-
-function newSessionKey(): string {
-  return globalThis.crypto?.randomUUID?.()
-    ?? `viptv-native-${Date.now()}-${++nativeSessionSequence}`;
-}
-
-function isWireError(value: unknown): value is NativeWireError {
-  return typeof value === 'object'
-    && value !== null
-    && typeof (value as { code?: unknown }).code === 'string'
-    && typeof (value as { message?: unknown }).message === 'string';
-}
-
-/** The plugin's serialized engine failures map onto the shared Player codes. */
-function playerErrorCodeFor(wireCode: string | undefined, fallback: PlayerErrorCode): PlayerErrorCode {
-  switch (wireCode) {
-    case 'PROTOCOL_MISMATCH':
-    case 'RUNTIME_UNAVAILABLE':
-      return 'engine-unavailable';
-    // A pipeline failure means the engine cannot handle this delivery, so the
-    // session controller may escalate the same source to managed output.
-    case 'PIPELINE_FAILED':
-      return 'unsupported-format';
-    case 'INVALID_REQUEST':
-      return 'prepare-failed';
-    default:
-      return fallback;
-  }
-}
-
-function nativeOperationError(cause: unknown, fallback: PlayerErrorCode, message: string): PlayerOperationError {
-  if (isWireError(cause)) {
-    return new PlayerOperationError(playerErrorCodeFor(cause.code, fallback), cause.message, cause);
-  }
-  return new PlayerOperationError(fallback, message, cause);
-}
-
-function nonNegative(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : 0;
-}
-
-function hlsish(url: string): boolean {
-  return /\.m3u8(?:[?#]|$)/i.test(url);
-}
-
-
-function nativeDiagnostics(url: string, backend?: string): PlayerDiagnostics {
-  return {
-    engine: 'tauri-native',
-    networkTransport: 'direct',
-    transport: hlsish(url) ? 'hls' : 'file',
-    ...(backend && backend.length > 0 ? { backend } : {}),
-  };
-}
-
-function engineDuration(snapshot: NativeVideoSnapshot | undefined): number | null {
-  return snapshot && !snapshot.live && snapshot.durationSeconds > 0
-    ? snapshot.durationSeconds
-    : null;
-}
-
-function hasEnded(snapshot: NativeVideoSnapshot | undefined): boolean {
-  return Boolean(snapshot
-    && !snapshot.live
-    && snapshot.durationSeconds > 0
-    && snapshot.currentTimeSeconds >= snapshot.durationSeconds);
-}
-
-function selectedCodec(snapshot: NativeVideoSnapshot, kind: 'video' | 'audio'): string | undefined {
-  const track = snapshot.tracks.find(candidate => candidate.kind === kind && candidate.selected);
-  return track && track.codec.length > 0 ? track.codec : undefined;
-}
-
-function sameLayout(a: NativeLayout | undefined, b: NativeLayout | undefined): boolean {
-  return a !== undefined && b !== undefined
-    && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
-}
-
-function tracksFromNative(tracks: readonly NativeVideoTrack[]): PlayerTracks {
-  const audio: PlayerTrack[] = [];
-  const text: PlayerTrack[] = [];
-  let selectedAudioId: string | null = null;
-  let selectedTextId: string | null = null;
-  for (const track of tracks) {
-    if (track.kind !== 'audio' && track.kind !== 'subtitle') continue;
-    const kind = track.kind === 'audio' ? 'audio' : 'text';
-    const id = `${kind}:${track.index}`;
-    const fallback = `${kind === 'audio' ? 'Audio' : 'Subtitle'} ${track.index}`;
-    const entry: PlayerTrack = {
-      id,
-      label: [track.label, track.language].find(value => value.length > 0) ?? fallback,
-      language: track.language.length > 0 ? track.language : undefined,
-      available: true,
-    };
-    if (kind === 'audio') audio.push(entry); else text.push(entry);
-    if (track.selected) {
-      if (kind === 'audio') selectedAudioId = id; else selectedTextId = id;
-    }
-  }
-  return { audio, text, selectedAudioId, selectedTextId };
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
@@ -323,8 +103,7 @@ export class TauriNativeAdapter extends SessionPlayer {
   private pollTimer?: ReturnType<typeof setTimeout>;
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
   private resizeObserver?: ResizeObserver;
-  private aperture: Array<{ element: HTMLElement; background: string }> = [];
-  private savedAnchorVisibility: string | undefined;
+  private readonly aperture: NativeAperture;
   private textureStream?: MediaStream;
   private lastLayout?: NativeLayout;
   private layoutDirty = false;
@@ -340,6 +119,7 @@ export class TauriNativeAdapter extends SessionPlayer {
     this.invoker = invoker;
     this.platform = options.platform ?? tauriNativePlatform();
     this.engine = options.engine ?? 'auto';
+    this.aperture = new NativeAperture(anchor);
   }
 
   async open(request: OpenPlayerRequest): Promise<void> {
@@ -437,7 +217,7 @@ export class TauriNativeAdapter extends SessionPlayer {
       if (!this.isCurrent(sessionId)) return;
       this.publishSnapshot(sessionId, this.native);
       this.update(sessionId, { error: null });
-      if (platform !== 'windows') this.openAperture();
+      if (platform !== 'windows') this.aperture.open(this.lastLayout);
       this.startLayoutTracking();
       this.startPolling();
       this.watchFirstFrame(sessionId, request);
@@ -886,7 +666,7 @@ export class TauriNativeAdapter extends SessionPlayer {
       });
       if (this.sessionKey !== sessionKey) return;
       this.lastLayout = layout;
-      this.publishLayoutVariables(layout);
+      this.aperture.publish(layout);
     } catch (cause) {
       const sessionId = this.snapshot.sessionId;
       if (this.isCurrent(sessionId)) {
@@ -897,50 +677,6 @@ export class TauriNativeAdapter extends SessionPlayer {
       this.layoutInFlight = false;
       if (this.layoutDirty && this.sessionKey !== undefined) this.requestLayout();
     }
-  }
-
-  /**
-   * Makes the DOM stack above the anchor transparent so the native surface
-   * shows through the WebView aperture, and hides the anchor itself. This is
-   * the honest MVP aperture: unlike the plugin's own compositor it does not
-   * reconstruct the original backgrounds around the video rectangle, so the
-   * surrounding page shows the native black floor while a session is live.
-   */
-  private openAperture(): void {
-    if (this.savedAnchorVisibility === undefined) {
-      this.savedAnchorVisibility = this.anchor.style.visibility;
-      this.anchor.style.visibility = 'hidden';
-    }
-    const saved: Array<{ element: HTMLElement; background: string }> = [];
-    for (let element = this.anchor.parentElement; element instanceof HTMLElement; element = element.parentElement) {
-      saved.push({ element, background: element.style.background });
-      element.style.background = 'transparent';
-    }
-    this.aperture = saved;
-    if (this.lastLayout) this.publishLayoutVariables(this.lastLayout);
-  }
-
-  private closeAperture(): void {
-    for (const { element, background } of this.aperture) element.style.background = background;
-    this.aperture = [];
-    if (this.savedAnchorVisibility !== undefined) {
-      this.anchor.style.visibility = this.savedAnchorVisibility;
-      this.savedAnchorVisibility = undefined;
-    }
-    const root = document.documentElement;
-    root.classList.remove('tauri-native-video');
-    for (const name of LAYOUT_VARIABLES) root.style.removeProperty(name);
-  }
-
-  private publishLayoutVariables(layout: NativeLayout): void {
-    const root = document.documentElement;
-    root.classList.add('tauri-native-video');
-    root.style.setProperty('--tauri-native-video-left', `${layout.x}px`);
-    root.style.setProperty('--tauri-native-video-top', `${layout.y}px`);
-    root.style.setProperty('--tauri-native-video-right', `${layout.x + layout.width}px`);
-    root.style.setProperty('--tauri-native-video-bottom', `${layout.y + layout.height}px`);
-    root.style.setProperty('--tauri-native-video-width', `${layout.width}px`);
-    root.style.setProperty('--tauri-native-video-height', `${layout.height}px`);
   }
 
   private releaseTextureStream(): void {
@@ -978,7 +714,7 @@ export class TauriNativeAdapter extends SessionPlayer {
     this.stopPolling();
     this.clearFirstFrameWatchdog();
     this.stopLayoutTracking();
-    this.closeAperture();
+    this.aperture.close();
     this.releaseTextureStream();
     const sessionKey = this.sessionKey;
     this.sessionKey = undefined;

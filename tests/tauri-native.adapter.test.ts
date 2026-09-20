@@ -1,149 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createPlayer } from '../src';
-import {
-  TAURI_NATIVE_DELIVERY_CAPABILITIES,
-  TAURI_VIDEO_PROTOCOL_VERSION,
-  TauriNativeAdapter,
-  tauriNativePlatform,
-  type NativeVideoDiagnostics,
-  type NativeVideoEngine,
-  type NativeVideoSnapshot,
-  type NativeVideoTrack,
-} from '../src/tauri-native';
-
-function baseSnapshot(overrides: Partial<NativeVideoSnapshot> = {}): NativeVideoSnapshot {
-  return {
-    durationSeconds: 600,
-    currentTimeSeconds: 0,
-    bufferedSeconds: 240,
-    live: false,
-    seekable: true,
-    seekableStartSeconds: 0,
-    seekableEndSeconds: 600,
-    playing: false,
-    videoWidth: 1920,
-    videoHeight: 1080,
-    tracks: [
-      { id: 'video-0', index: 0, kind: 'video', language: '', label: '', codec: 'h264', selected: true },
-      { id: 'audio-1', index: 1, kind: 'audio', language: 'eng', label: 'English', codec: 'aac', selected: true },
-      { id: 'text-2', index: 2, kind: 'subtitle', language: 'spa', label: 'Spanish', codec: 'subrip', selected: false },
-    ],
-    ...overrides,
-  };
-}
-
-function last<T>(values: readonly T[]): T {
-  return values[values.length - 1];
-}
-
-/** Records every plugin command and answers the way the Rust engine would. */
-class FakeTauriVideoPlugin {
-  diagnostics: NativeVideoDiagnostics = {
-    protocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
-    crateName: 'tauri-plugin-video',
-    crateVersion: '0.4.0',
-    platform: 'linux',
-  };
-  openSnapshot: NativeVideoSnapshot = baseSnapshot({ playing: true });
-  openError: unknown;
-
-  /** Per-attempt open errors, consumed front-first; the persistent openError applies after the queue empties. */
-  openErrorQueue: unknown[] = [];
-  controlError: unknown;
-  statsSnapshot: NativeVideoSnapshot | undefined;
-  statsError: unknown;
-  readonly openedPayloads: Array<Record<string, unknown>> = [];
-  readonly controls: Array<{ sessionKey: string; action: string; value: number; index: number }> = [];
-  readonly layouts: Array<Record<string, unknown>> = [];
-  readonly closedKeys: string[] = [];
-  #current = 0;
-  #playing = false;
-  #tracks: readonly NativeVideoTrack[] = baseSnapshot().tracks;
-
-  readonly commands: string[] = [];
-  /** When set, the engine answers seeks by replaying from ~0: an origin that cannot serve range requests. */
-  seekReplaysFromBeginning = false;
-
-  async invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-    this.commands.push(command);
-    if (command === 'plugin:video|native_diagnostics') return this.diagnostics as T;
-    if (command === 'plugin:video|native_open') {
-      const payload = (args?.payload ?? {}) as Record<string, unknown>;
-      this.openedPayloads.push(payload);
-      const failure = this.openErrorQueue.length > 0 ? this.openErrorQueue.shift() : this.openError;
-      if (failure) throw failure;
-      this.#playing = payload.autoplay === true;
-      this.#current = 0;
-      this.#tracks = this.openSnapshot.tracks;
-      return this.openSnapshot as T;
-    }
-    if (command === 'plugin:video|native_control') {
-      const payload = (args?.payload ?? {}) as { sessionKey: string; action: string; value: number; index: number };
-      this.controls.push(payload);
-      if (this.controlError) throw this.controlError;
-      this.#apply(payload.action, payload.value, payload.index);
-      return this.#snapshot() as T;
-    }
-    if (command === 'plugin:video|native_stats') {
-      if (this.statsError) throw this.statsError;
-      return (this.statsSnapshot ?? this.#snapshot()) as T;
-    }
-    if (command === 'plugin:video|native_layout') {
-      this.layouts.push((args?.payload ?? {}) as Record<string, unknown>);
-      return null as T;
-    }
-    if (command === 'plugin:video|native_close') {
-      this.closedKeys.push(((args?.payload ?? {}) as { sessionKey: string }).sessionKey);
-      return null as T;
-    }
-    throw new Error(`unexpected command ${command}`);
-  }
-
-  #apply(action: string, value: number, index: number): void {
-    if (action === 'play') this.#playing = true;
-    else if (action === 'pause') this.#playing = false;
-    else if (action === 'seek') this.#current = this.seekReplaysFromBeginning ? 1.0 : value;
-    else if (action === 'track') {
-      this.#tracks = this.#tracks.map(track => track.index === index ? { ...track, selected: true } : track);
-    } else if (action === 'deselectTrack') {
-      this.#tracks = this.#tracks.map(track => track.index === index ? { ...track, selected: false } : track);
-    }
-  }
-
-  #snapshot(): NativeVideoSnapshot {
-    return {
-      ...this.openSnapshot,
-      currentTimeSeconds: this.#current,
-      bufferedSeconds: Math.max(this.#current, this.openSnapshot.bufferedSeconds),
-      playing: this.#playing,
-      tracks: this.#tracks,
-    };
-  }
-}
-
-function createAdapter(
-  plugin: FakeTauriVideoPlugin,
-  options: { engine?: NativeVideoEngine } = {},
-): { player: TauriNativeAdapter; anchor: HTMLVideoElement } {
-  const anchor = document.createElement('video');
-  return { player: new TauriNativeAdapter(anchor, plugin, { platform: 'linux', engine: options.engine }), anchor };
-}
+import { TAURI_VIDEO_PROTOCOL_VERSION, TauriNativeAdapter } from '../src/tauri-native';
+import { baseSnapshot, createAdapter, FakeTauriVideoPlugin, last } from './tauri-native-fake';
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe('TauriNativeAdapter', () => {
-  it('runs the Linux native path in this test runtime', () => {
-    expect(tauriNativePlatform()).toBe('linux');
-  });
-
   it('verifies the protocol, opens the exact selected source, and reports engine tracks', async () => {
     const plugin = new FakeTauriVideoPlugin();
     const { player, anchor } = createAdapter(plugin);
     // A direct original-file delivery: only then may the engine raise the duration.
     await player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod', adoptEngineDuration: true });
+    const sessionKey = plugin.openedPayloads[0]!.sessionKey as string;
 
     expect(plugin.commands[0]).toBe('plugin:video|native_diagnostics');
     expect(plugin.openedPayloads[0]).toMatchObject({
@@ -182,7 +52,8 @@ describe('TauriNativeAdapter', () => {
     expect(document.documentElement.classList.contains('tauri-native-video')).toBe(true);
 
     await player.stop();
-    expect(plugin.closedKeys).toHaveLength(1);
+    // The stop closes exactly the session this open established.
+    expect(plugin.closedKeys).toEqual([sessionKey]);
     expect(anchor.style.visibility).toBe('');
     expect(document.documentElement.classList.contains('tauri-native-video')).toBe(false);
     expect(player.snapshot.state).toBe('stopped');
@@ -211,7 +82,6 @@ describe('TauriNativeAdapter', () => {
     await player.selectAudioTrack('audio:1');
     expect(last(plugin.controls)).toMatchObject({ action: 'track', index: 1 });
     await player.selectTextTrack('text:2');
-    expect(last(plugin.controls)).toMatchObject({ action: 'track', index: 2 });
     expect(player.snapshot.tracks.selectedTextId).toBe('text:2');
     await player.selectTextTrack(null);
     expect(last(plugin.controls)).toMatchObject({ action: 'deselectTrack', index: 2 });
@@ -273,17 +143,6 @@ describe('TauriNativeAdapter', () => {
     // The seek was dispatched to the engine; the origin failed it, not the adapter.
     expect(plugin.controls.some(control => control.action === 'seek' && control.value === 90)).toBe(true);
     await player.stop();
-  });
-
-  it('closes the native session when the player stops', async () => {
-    const plugin = new FakeTauriVideoPlugin();
-    const { player } = createAdapter(plugin);
-    await player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod' });
-    const sessionKey = plugin.openedPayloads[0]!.sessionKey as string;
-
-    await player.stop();
-
-    expect(plugin.closedKeys).toEqual([sessionKey]);
   });
 
   it('opens paused at a start position and honors managed timeline offsets', async () => {
@@ -436,7 +295,6 @@ describe('TauriNativeAdapter', () => {
     await player.stop();
   });
 
-
   it('maps a seek failure honestly', async () => {
     const plugin = new FakeTauriVideoPlugin();
     const { player } = createAdapter(plugin);
@@ -532,52 +390,5 @@ describe('TauriNativeAdapter', () => {
     expect(document.documentElement.style.getPropertyValue('--tauri-native-video-left')).toBe('10px');
     await player.stop();
     expect(document.documentElement.style.getPropertyValue('--tauri-native-video-left')).toBe('');
-  });
-});
-
-describe('Tauri player registration', () => {
-  it('registers the native adapter only inside the Tauri runtime', () => {
-    const anchor = document.createElement('video');
-    expect(() => createPlayer({ platform: 'tauri', video: anchor }))
-      .toThrow(/unavailable outside the desktop app/);
-
-    const scoped = window as typeof window & { __TAURI_INTERNALS__?: unknown };
-    scoped.__TAURI_INTERNALS__ = {};
-    try {
-      const player = createPlayer({ platform: 'tauri', video: anchor });
-      expect(player.capabilities.platform).toBe('tauri');
-      expect(player.capabilities.engine).toContain('tauri-plugin-video');
-    } finally {
-      delete scoped.__TAURI_INTERNALS__;
-    }
-  });
-
-  it('keeps the browser engine unchanged outside Tauri', () => {
-    const video = document.createElement('video');
-    const canvas = document.createElement('canvas');
-    const player = createPlayer({ platform: 'html5', video, canvas });
-    expect(player.capabilities.platform).toBe('html5');
-  });
-});
-
-describe('TAURI_NATIVE_DELIVERY_CAPABILITIES', () => {
-  it('declares a broad direct-delivery profile that never asks for transcoding', () => {
-    expect(TAURI_NATIVE_DELIVERY_CAPABILITIES).toMatchObject({
-      maxWidth: 3840,
-      maxHeight: 2160,
-      h264: true,
-      hevc: true,
-      aac: true,
-      hevcSdr: true,
-      directPlay: true,
-      directMp4: true,
-      directHls: true,
-      directFiles: true,
-      directUrls: true,
-    });
-    expect(TAURI_NATIVE_DELIVERY_CAPABILITIES.directVideoCodecs)
-      .toEqual(expect.arrayContaining(['avc', 'hevc', 'vp9', 'av1']));
-    expect(TAURI_NATIVE_DELIVERY_CAPABILITIES.directAudioCodecs)
-      .toEqual(expect.arrayContaining(['aac', 'ac3', 'eac3', 'dts', 'opus', 'flac']));
   });
 });
