@@ -42,8 +42,8 @@ bounded and initiated by the seek control.
   reported native drops, including seek/resume.
 - This Vizio's frame callback reports only time zero and canvas capture cannot
   see its hardware video plane. Do not infer frame-accurate seek or optical AV
-  synchronization from those APIs. The soak did not continuously record the
-  native dropped-frame counter. HDR and sustained 4K are not qualified.
+  synchronization from those APIs. The final soak sampled the native dropped-frame
+  counter every 15 seconds. HDR and sustained 4K are not qualified.
 
 The exact firmware evidence table is in `vizio-evidence.ts`; newer firmware does
 not inherit it. Runtime MSE checks must also pass. Healthy-network release gates
@@ -77,3 +77,24 @@ preparation are excluded. Baseline is video `6c6545e`; candidate is `af63620`.
 The AAC cases improved; the AC-3 extension case increased about 5 ms at p95.
 These small samples measure local preparation, not end-to-end household startup
 percentiles. Binary promotion uses the separate server benchmark.
+
+### Completed 30-minute runs
+
+Trusted HTTPS, 720p30 H.264/AAC synthetic MKV; 120 samples at 15-second
+intervals. All sampled states were playing. Counters cover the whole run; AV
+skew is the maximum sampled presentation/audio-clock estimate, not an optical
+measurement. Short interruptions between samples cannot be excluded.
+
+| Runtime / path | Reported dropped frames | Maximum sampled AV skew |
+|---|---:|---:|
+| Chromium / WebCodecs | 85 / 53,872 (0.158%) | 12.7 ms |
+| Firefox / WebCodecs | 175 / 53,930 (0.324%) | 17.0 ms |
+| Playwright WebKit / WebCodecs | 168 / 54,023 (0.311%) | 12.0 ms |
+| Physical Vizio / streaming MSE copy | 0 / 54,501 | Unavailable on this firmware |
+
+The Vizio's largest sampled buffer was 30.05 seconds in total, with at most
+21.99 seconds ahead (the 20-second admission limit plus one fragment). The TV
+returned to VIPTV afterwards. Higher-resolution compatibility remains the
+separate short-test envelope above; this soak does not qualify sustained HDR
+or 4K. Final checks: 96 video tests, 217 client tests, 80 engine tests including
+real FFmpeg, 208 server tests and isolated container acceptance passed.
