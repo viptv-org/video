@@ -62,10 +62,16 @@ export class Html5FallbackAdapter implements Player {
   private async nextPath(request: OpenPlayerRequest, generation: number): Promise<void> {
     while (this.paths.length && generation === this.generation) {
       const path = this.paths.shift()!;
-      const player: Player = path === 'bunny' ? new (await import('./mediabunny')).MediabunnyAdapter(this.canvas!)
-        : path === 'mse' ? new (await import('./mediabunny-mse')).MediabunnyMseAdapter(this.media as HTMLVideoElement)
-        : new VizioHtml5Adapter(this.media);
-      if (generation !== this.generation) { await player.dispose(); return; }
+      let player: Player;
+      if (path === 'bunny') {
+        const { MediabunnyAdapter } = await import('./mediabunny');
+        if (generation !== this.generation) return;
+        player = new MediabunnyAdapter(this.canvas!);
+      } else if (path === 'mse') {
+        const { MediabunnyMseAdapter } = await import('./mediabunny-mse');
+        if (generation !== this.generation) return;
+        player = new MediabunnyMseAdapter(this.media as HTMLVideoElement);
+      } else player = new VizioHtml5Adapter(this.media);
       this.attach(player, generation, path === 'bunny');
       try {
         await withTimeout(Promise.race([player.open(request), new Promise<void>(resolve => { this.cancelOpening = resolve; })]), 15000);
