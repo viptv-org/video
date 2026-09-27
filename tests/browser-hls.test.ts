@@ -2,15 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VizioHtml5Adapter } from '../src/vizio-html5';
 import type { HtmlMediaLike } from '../src/vizio-html5';
 
-const hls = vi.hoisted(() => ({ supported: true, instances: [] as Array<{ config: { xhrSetup: (xhr: unknown, url: string) => void }; destroy: ReturnType<typeof vi.fn>; loadSource: ReturnType<typeof vi.fn>; listeners: Record<string, (event: string, data: { fatal: boolean; type: string }) => void> }> }));
+const hls = vi.hoisted(() => ({ supported: true, instances: [] as Array<{ config: { xhrSetup: (xhr: unknown, url: string) => void }; destroy: ReturnType<typeof vi.fn>; loadSource: ReturnType<typeof vi.fn>; listeners: Record<string, (event: string, data: { fatal: boolean; type: string; response?: { code: number } }) => void> }> }));
 vi.mock('hls.js', () => ({ default: class {
   static isSupported = () => hls.supported;
   static Events = { ERROR: 'error' };
   static ErrorTypes = { NETWORK_ERROR: 'network' };
   destroy = vi.fn(); loadSource = vi.fn(); attachMedia = vi.fn();
-  listeners: Record<string, (event: string, data: { fatal: boolean; type: string }) => void> = {};
+  listeners: Record<string, (event: string, data: { fatal: boolean; type: string; response?: { code: number } }) => void> = {};
   constructor(readonly config: { xhrSetup: (xhr: unknown, url: string) => void }) { hls.instances.push(this); }
-  on(event: string, callback: (event: string, data: { fatal: boolean; type: string }) => void) { this.listeners[event] = callback; }
+  on(event: string, callback: (event: string, data: { fatal: boolean; type: string; response?: { code: number } }) => void) { this.listeners[event] = callback; }
 } }));
 class Media implements HtmlMediaLike {
   src = ''; currentTime = 0; duration = 90; paused = true; ended = false; error: { code: number; message?: string } | null = null;
@@ -80,6 +80,15 @@ describe('HTML HLS delivery', () => {
     expect(() => setup(null, 'https://upstream.invalid/seg.ts')).toThrow();
     expect(() => setup(null, `${window.location.origin}/media/other/cap/seg.ts`)).toThrow();
     media.emit('loadedmetadata'); await opening; await player.dispose();
+  });
+  it('surfaces an explicit HLS media refusal immediately after playback starts', async () => {
+    const media = new Media(), player = new VizioHtml5Adapter(media);
+    const opening = player.open({ url: url(), kind: 'live', paused: true });
+    media.emit('loadedmetadata'); await opening;
+    hls.instances[0].listeners.error('error', { fatal: false, type: 'network', response: { code: 406 } });
+    expect(player.snapshot).toMatchObject({ state: 'error', error: { code: 'unsupported-format', reason: 'container' } });
+    expect(hls.instances[0].destroy).toHaveBeenCalledOnce();
+    await player.dispose();
   });
   it('surfaces fatal HLS errors and releases resources without unbounded recovery', async () => {
     const player = new VizioHtml5Adapter(new Media());

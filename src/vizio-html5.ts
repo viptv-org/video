@@ -230,7 +230,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
         hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, publishTracks);
         hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, publishTracks);
         hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (!data.fatal || !this.isCurrent(sessionId)) return;
+          if (!this.isCurrent(sessionId) || !data.fatal && data.response?.code !== 406) return;
           failOpen(new PlayerOperationError(data.response?.code === 406 ? 'unsupported-format' : data.type === Hls.ErrorTypes.NETWORK_ERROR ? 'connection-failed' : 'unsupported-format', 'The selected HLS source could not be played.', undefined, data.response?.code === 406 ? 'container' : undefined));
         });
         hls.attachMedia(this.media as HTMLMediaElement);
