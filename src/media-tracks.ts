@@ -2,11 +2,13 @@ import type { Input, InputAudioTrack, InputVideoTrack } from 'mediabunny';
 import type { OpenPlayerRequest, PlayerQuality, PlayerTrack } from './types';
 
 export const trackId = (type: string, id: number) => `${type}:${id}`;
+export const mediaLanguage = (language: string) => ({ en: 'eng', es: 'spa', fr: 'fra', de: 'deu', it: 'ita', pt: 'por', ja: 'jpn', ko: 'kor', zh: 'zho', hi: 'hin', ar: 'ara' }[language.split('-')[0]] ?? language);
 export async function audioChoices(video: InputVideoTrack): Promise<{ tracks: InputAudioTrack[]; choices: PlayerTrack[] }> {
   const tracks = await video.getPairableAudioTracks();
   const choices = await Promise.all(tracks.map(async (track) => ({
     id: trackId('audio', track.id), label: await track.getName() || await track.getLanguageCode() || `Audio ${track.number}`,
     language: await track.getLanguageCode(), available: true,
+    codec: await track.getCodec() ?? undefined,
   })));
   return { tracks, choices };
 }
@@ -17,8 +19,7 @@ export async function chooseAudio(video: InputVideoTrack, request: OpenPlayerReq
     if (track) return track;
   }
   if (request.preferredAudioLanguage) {
-    const normalize = (language: string) => ({ en: 'eng', es: 'spa', fr: 'fra', de: 'deu', it: 'ita', pt: 'por', ja: 'jpn' }[language.split('-')[0]] ?? language);
-    for (const track of tracks) if (normalize(await track.getLanguageCode()) === normalize(request.preferredAudioLanguage)) return track;
+    for (const track of tracks) if (mediaLanguage(await track.getLanguageCode()) === mediaLanguage(request.preferredAudioLanguage)) return track;
   }
   return video.getPrimaryPairableAudioTrack();
 }
@@ -52,7 +53,7 @@ export class AdaptiveQuality {
     const best = budget ? eligible[eligible.length - 1] ?? sorted[0] : sorted[at];
     if (bufferedSeconds < 0.03 && at > 0) { this.upgradeSince = 0; return sorted[at - 1].id; }
     if (sorted.indexOf(best) < at) { this.upgradeSince = 0; return best.id; }
-    if (sorted.indexOf(best) > at && bufferedSeconds >= 0.1) {
+    if (sorted.indexOf(best) > at && bufferedSeconds >= 0.025) {
       this.upgradeSince ||= now;
       if (now - this.upgradeSince >= 10000) { this.upgradeSince = 0; return sorted[at + 1].id; }
     } else this.upgradeSince = 0;

@@ -169,7 +169,7 @@ export class PlaybackSessionController<
     // failure surfaces honestly instead.
     if (active.request.capabilities.directUrls) return false;
     const recovery = recoveryRequest(active.session, active.request, snapshot.error.code);
-    const request = recovery ? { ...recovery, ...(snapshot.error.reason ? { conversionReason: snapshot.error.reason } : {}) } : undefined;
+    const request = recovery ? { ...recovery, ...snapshot.error.selection, ...(snapshot.error.reason ? { conversionReason: snapshot.error.reason } : {}) } : undefined;
     if (!request || this.recoveredSessions.has(active.session.id)) return false;
     this.recoveredSessions.add(active.session.id);
     this.cancelNext(false);
@@ -232,7 +232,9 @@ export class PlaybackSessionController<
     const operation = ++this.operationGeneration;
     const active = this.requireActive();
     const position = this.options.player.snapshot.time.positionSeconds;
-    const request: PlaybackStart = { ...active.request, position, ...selection };
+    const request: PlaybackStart = { ...active.request, position, ...selection,
+      ...(active.request.capabilities.directUrls ? {} : { managedOnly: true }),
+      ...(selection.subtitlesOff ? { subtitleTrackIndex: undefined } : {}) };
     await this.transition({ ...active.intent, position }, request, active, () => operation === this.operationGeneration);
   }
 
@@ -340,7 +342,7 @@ export class PlaybackSessionController<
           if (!stillWanted() || !recovery) throw cause;
           await this.options.backend.stopPlayback(session.id);
           if (!stillWanted()) throw new DOMException('Playback operation was cancelled.', 'AbortError');
-          request = { ...recovery, ...(cause instanceof PlayerOperationError && cause.reason ? { conversionReason: cause.reason } : {}) };
+          request = { ...recovery, ...(cause instanceof PlayerOperationError ? cause.selection : {}), ...(cause instanceof PlayerOperationError && cause.reason ? { conversionReason: cause.reason } : {}) };
           session = await this.options.backend.startPlayback(request);
           if (!stillWanted()) throw new DOMException('Playback operation was cancelled.', 'AbortError');
         }

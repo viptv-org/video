@@ -37,6 +37,9 @@ export interface PlayerCapabilities {
 }
 
 export interface PlayerTrack {
+  readonly codec?: string;
+  readonly delivery?: 'local' | 'server';
+  readonly inputIndex?: number;
   readonly id: string;
   readonly label: string;
   readonly language?: string;
@@ -80,6 +83,11 @@ export interface PlaybackEngineEvidence {
   readonly maxFrameRate?: number;
   readonly bitDepth?: number;
   readonly hdr?: boolean;
+  readonly profile?: string;
+  readonly maxLevel?: number;
+  readonly containers?: readonly string[];
+  readonly maxChannels?: number;
+  readonly sampleRates?: readonly number[];
 }
 export interface BrowserMediaCapabilities {
   readonly version: 1;
@@ -105,6 +113,7 @@ export type PlayerErrorCode =
   | 'unknown';
 
 export interface PlayerFailure {
+  readonly selection?: { readonly audioTrackIndex?: number; readonly subtitleTrackIndex?: number };
   readonly code: PlayerErrorCode;
   readonly message: string;
   readonly cause?: unknown;
@@ -129,9 +138,11 @@ export interface PlayerDiagnostics {
   readonly presentedFrames?: number;
   readonly estimatedAvSkewMs?: number;
   readonly presentedPositionSeconds?: number;
+  readonly frameTiming?: 'verified' | 'unavailable';
 }
 
 export interface PlayerSnapshot {
+  readonly notice?: string;
   readonly qualities?: readonly PlayerQuality[];
   readonly selectedQualityId?: string;
   readonly metadata?: { readonly title?: string; readonly artist?: string };
@@ -177,6 +188,7 @@ export interface OpenPlayerRequest {
   readonly deliveryMode?: 'direct' | 'managed';
   /** Container of this delivery, e.g. `hls` or `mp4`. */
   readonly deliveryFormat?: string;
+  readonly deliveryDecision?: PlayerDiagnostics['decision'];
   /**
    * The title's full length in seconds as known by the server. Managed output is
    * a rolling HLS window, so an engine duration describes only the buffered part
@@ -196,6 +208,7 @@ export type PlayerListener = (snapshot: PlayerSnapshot) => void;
 
 export interface Player {
   loadTextTracks?(): Promise<void>;
+  loadAudioTracks?(): Promise<void>;
   selectQuality?(id: string): Promise<void>;
   preview?(positionSeconds: number): Promise<Blob | null>;
   readonly capabilities: PlayerCapabilities;
@@ -216,14 +229,14 @@ export interface Player {
 export class PlayerOperationError extends Error {
   readonly code: PlayerErrorCode;
 
-  constructor(code: PlayerErrorCode, message: string, readonly cause?: unknown, readonly reason?: MediaFailureReason) {
+  constructor(code: PlayerErrorCode, message: string, readonly cause?: unknown, readonly reason?: MediaFailureReason, readonly selection?: PlayerFailure['selection']) {
     super(message);
     this.name = 'PlayerOperationError';
     this.code = code;
   }
 
   toFailure(): PlayerFailure {
-    return { code: this.code, message: this.message, cause: this.cause, ...(this.reason ? { reason: this.reason } : {}) };
+    return { code: this.code, message: this.message, cause: this.cause, ...(this.reason ? { reason: this.reason } : {}), ...(this.selection ? { selection: this.selection } : {}) };
   }
 }
 

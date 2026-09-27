@@ -2,7 +2,7 @@ import { Input, UrlSource, ALL_FORMATS, CanvasSink, AudioBufferSink, type InputT
 import { SessionPlayer } from './session';
 import { PlayerOperationError, growOnlyDuration, timelineDuration, type OpenPlayerRequest, type PlayerCapabilities } from './types';
 
-import { mediaFailure } from './browser-policy';
+import { mediaFailure, canChangeMediaPath } from './browser-policy';
 import { audioChoices, chooseAudio, trackId, videoChoices, AdaptiveQuality } from './media-tracks';
 import { sessionMediaFetch } from './session-media-fetch';
 export { sessionMediaFetch } from './session-media-fetch';
@@ -49,6 +49,7 @@ export class MediabunnyAdapter extends SessionPlayer {
   private liveStalls = 0;
   private bufferingSince = 0;
   private lastLiveReconnect = 0;
+  private rejectedQualities = new Set<string>();
   private playing = false;
   private position = 0;
   private firstTimestamp = 0;
@@ -80,6 +81,7 @@ export class MediabunnyAdapter extends SessionPlayer {
     const session = this.startSession(request.kind);
     if (this.request?.url !== request.url) { this.liveStalls = 0; this.lastLiveReconnect = 0; }
     this.request = request;
+    this.rejectedQualities.clear();
     this.performanceStart = performance.now(); this.presented = 0; this.dropped = 0;
     this.observedTitleDuration = null;
     const openedAt = performance.now();
@@ -143,7 +145,7 @@ export class MediabunnyAdapter extends SessionPlayer {
     void input.getMetadataTags().then(tags => {
       if (sourceToken === this.sourceGeneration) this.update(session, { metadata: { title: typeof tags.title === 'string' ? tags.title : undefined, artist: typeof tags.artist === 'string' ? tags.artist : undefined } });
     }).catch(() => undefined);
-    this.update(session, { state: 'ready', diagnostics: { firstFrameMs: performance.now() - openedAt, decision: request.deliveryMode === 'managed' ? 'server-remux' : 'original', engine: 'mediabunny', networkTransport: '__TAURI_INTERNALS__' in window ? 'native-http' : new URL(request.url, location.href).pathname.startsWith('/media/') ? 'browser-proxy' : 'direct', transport: /\.m3u8(?:[?#]|$)/i.test(request.url) ? 'hls' : 'file', videoCodec: videoConfig?.codec, audioCodec: audioConfig?.codec, width, height }, volume: { level: this.volume, muted: this.muted }, time: this.time() });
+    this.update(session, { state: 'ready', diagnostics: { firstFrameMs: performance.now() - openedAt, decision: request.deliveryDecision ?? (request.deliveryMode === 'managed' ? 'server-remux' : 'original'), engine: 'mediabunny', networkTransport: '__TAURI_INTERNALS__' in window ? 'native-http' : new URL(request.url, location.href).pathname.startsWith('/media/') ? 'browser-proxy' : 'direct', transport: /\.m3u8(?:[?#]|$)/i.test(request.url) ? 'hls' : 'file', videoCodec: videoConfig?.codec, audioCodec: audioConfig?.codec, width, height }, volume: { level: this.volume, muted: this.muted }, time: this.time() });
     if (request.paused) this.update(session, { state: 'paused' });
     else {
       try { await this.play(); }
@@ -220,6 +222,14 @@ export class MediabunnyAdapter extends SessionPlayer {
     this.audioTrack = audio; this.audioSink = new AudioBufferSink(audio);
     await this.publishTracks(); if (resume) await this.play();
   }
+  async loadAudioTracks(): Promise<void> {
+    if (!this.videoTrack) return;
+    const source = this.sourceGeneration;
+    const choices = await audioChoices(this.videoTrack);
+    const supported = await Promise.all(choices.tracks.map(track => ensureDecodable(track)));
+    if (source !== this.sourceGeneration) return;
+    this.update(this.snapshot.sessionId, { tracks: { ...this.snapshot.tracks, audio: choices.choices.map((track, index) => ({ ...track, available: supported[index] })) } });
+  }
   private async publishTracks(): Promise<void> {
     if (!this.videoTrack) return;
     const source = this.sourceGeneration;
@@ -246,8 +256,15 @@ export class MediabunnyAdapter extends SessionPlayer {
       if (!frame) return;
       const resume = this.playing; await this.pause();
       this.videoTrack = track; this.videoSink = sink; this.audioTrack = audio ?? undefined; this.audioSink = audio ? new AudioBufferSink(audio) : undefined;
-      this.canvas.width = await track.getDisplayWidth(); this.canvas.height = await track.getDisplayHeight();
-      this.draw(frame); await this.publishTracks(); if (resume) await this.play();
+      const [width, height, videoConfig, audioConfig] = await Promise.all([track.getDisplayWidth(), track.getDisplayHeight(), track.getDecoderConfig(), audio?.getDecoderConfig()]);
+      if (source !== this.sourceGeneration) return;
+      if (this.snapshot.diagnostics) this.update(this.snapshot.sessionId, { diagnostics: { ...this.snapshot.diagnostics, width, height, videoCodec: videoConfig?.codec, audioCodec: audioConfig?.codec } });
+      // Keep the current picture until the new iterator reaches the same clock.
+      // The preflight frame may be stale after a slow rendition fetch.
+      await this.publishTracks(); if (resume) await this.play();
+    } catch (cause) {
+      if (canChangeMediaPath(mediaFailure(cause))) this.rejectedQualities.add(id);
+      throw cause;
     } finally { this.switching = false; }
   }
   async preview(position: number): Promise<Blob | null> {
@@ -279,7 +296,10 @@ export class MediabunnyAdapter extends SessionPlayer {
   private draw(frame: WrappedCanvas): void {
     const context = this.canvas.getContext('2d');
     if (!context) throw new PlayerOperationError('unsupported-format', 'The video drawing surface is unavailable.', undefined, 'rendering');
-    context.drawImage(frame.canvas, 0, 0, this.canvas.width, this.canvas.height);
+    const scale = Math.min(this.canvas.width / frame.canvas.width, this.canvas.height / frame.canvas.height);
+    const width = frame.canvas.width * scale, height = frame.canvas.height * scale;
+    context.clearRect?.(0, 0, this.canvas.width, this.canvas.height);
+    context.drawImage(frame.canvas, (this.canvas.width - width) / 2, (this.canvas.height - height) / 2, width, height);
     if (this.snapshot.diagnostics) this.update(this.snapshot.sessionId, { diagnostics: { ...this.snapshot.diagnostics, presentedPositionSeconds: frame.timestamp - this.firstTimestamp + (this.request?.timelineOffsetSeconds ?? 0) } });
   }
   private currentPosition(): number {
@@ -380,9 +400,9 @@ export class MediabunnyAdapter extends SessionPlayer {
     if (performance.now() - this.performanceStart > 10000 && this.presented > 240 && this.dropped / (this.presented + this.dropped) > 0.05) {
       this.decoderFailed(token, new PlayerOperationError('performance-limited', 'This playback path cannot sustain the frame rate.', undefined, 'performance')); return;
     }
-    if (this.qualityId === 'auto' && this.videoTrack && !this.switching && performance.now() - this.lastSwitch > 5000) {
+    if (this.qualityId === 'auto' && this.videoTrack && !this.switching && performance.now() - this.lastSwitch > 1500) {
       const id = trackId('video', this.videoTrack.id);
-      const choice = this.adaptive.choose(this.videoChoices.choices, id, this.decodedEnd - position, performance.now());
+      const choice = this.adaptive.choose(this.videoChoices.choices.filter(q => !this.rejectedQualities.has(q.id)), id, this.decodedEnd - position, performance.now());
       if (choice !== id) void this.switchQuality(choice).catch(() => undefined);
     }
   }
@@ -441,11 +461,15 @@ async function loadCodecExtension(codec: string): Promise<void> {
 /** Registers the matching decoder when a track's own codec is not decodable yet. */
 export async function ensureDecodable(track: InputTrack | null | undefined): Promise<boolean> {
   if (!track) return false;
-  if (await track.canDecode().catch(() => false)) return true;
-  const codec = await track.getCodec().catch(() => null);
+  const check = async () => {
+    try { return await track.canDecode(); }
+    catch (cause) { if (cause instanceof PlayerOperationError && !canChangeMediaPath(cause)) throw cause; return false; }
+  };
+  if (await check()) return true;
+  const codec = await track.getCodec();
   if (!codec) return false;
   await loadCodecExtension(codec);
-  return track.canDecode().catch(() => false);
+  return check();
 }
 
 /** Video and audio codecs this client can decode, for the server's delivery choice. */

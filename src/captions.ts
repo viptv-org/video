@@ -2,7 +2,8 @@ import { sessionMediaFetch } from './session-media-fetch';
 import type { PlayerTrack } from './types';
 
 export interface CaptionCue { start: number; end: number; text: string; }
-const clock = (s: string) => s.split(':').reduce((total, part) => total * 60 + Number(part), 0);
+const clock = (s: string) => (s.startsWith('-') ? -1 : 1) * s.replace(/^-/, '').split(':').reduce((total, part) => total * 60 + Number(part), 0);
+const cueText = (value: string) => value.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, entity: string) => ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' }[entity]!));
 /** Plain cue text is rendered as text, never inserted as HTML. */
 export function parseWebVtt(text: string, offset = 0): CaptionCue[] {
   const cues: CaptionCue[] = [];
@@ -12,10 +13,11 @@ export function parseWebVtt(text: string, offset = 0): CaptionCue[] {
     const lines = block.split('\n');
     const index = lines.findIndex(line => line.includes(' --> '));
     if (index < 0) continue;
-    const times = lines[index].match(/([\d:.]+)\s+-->\s+([\d:.]+)/);
+    const times = lines[index].match(/(-?[\d:.]+)\s+-->\s+(-?[\d:.]+)/);
     if (!times) continue;
     const start = clock(times[1]) + offset, end = clock(times[2]) + offset;
-    if (Number.isFinite(start) && Number.isFinite(end) && end > start) cues.push({ start, end, text: lines.slice(index + 1).join('\n').replace(/<[^>]*>/g, '') });
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) cues.push({ start, end, text: cueText(lines.slice(index + 1).join('\n')).slice(0, 4096) });
+    if (cues.length >= 4096) break;
   }
   return cues;
 }
@@ -36,8 +38,10 @@ export class BrowserCaptions {
   }
   async discover(): Promise<void> {
     if (this.tracks.length) return;
+    const token = this.generation;
     const response = await this.fetch(new URL('tracks.json', this.base), { signal: this.abort.signal });
     const result = await response.json() as { subtitles?: Array<{ input_index: number; title: string; language?: string; supported: boolean }> };
+    if (token !== this.generation || this.abort.signal.aborted) return;
     this.tracks = (result.subtitles ?? []).slice(0, 32).map(t => ({ id: `subtitle:${t.input_index}`, label: t.title || t.language || `Subtitle ${t.input_index + 1}`, language: t.language, available: t.supported }));
     this.changed(this.tracks, this.selected, []);
   }

@@ -2,6 +2,8 @@ import { VizioHtml5Adapter, VIZIO_HTML5_CAPABILITIES, type HtmlMediaLike } from 
 import { IDLE_SNAPSHOT, PlayerOperationError, type OpenPlayerRequest, type Player, type PlayerCapabilities, type PlayerListener, type PlayerSnapshot } from './types';
 import { browserPlaybackPolicy, canChangeMediaPath, mediaFailure } from './browser-policy';
 import { BrowserCaptions } from './captions';
+import { sessionMediaFetch } from './session-media-fetch';
+import { audioChoices, mediaLanguage } from './media-tracks';
 
 /** WebCodecs availability is a gate, never proof that the selected track decodes. */
 export function mediabunnyUnavailable(canvas?: HTMLCanvasElement): string | undefined {
@@ -14,7 +16,8 @@ export function mediabunnyUnavailable(canvas?: HTMLCanvasElement): string | unde
 
 /** Prefer real decoded samples; failure retains the exact delivery URL and backend lease. */
 export class Html5FallbackAdapter implements Player {
-  get capabilities(): PlayerCapabilities { return { ...(this.active?.capabilities ?? VIZIO_HTML5_CAPABILITIES), platform: this.platform, canSetVolume: true, ...(this.captions ? { canSelectTextTrack: true, canDisableTextTrack: true } : {}) }; }
+  get capabilities(): PlayerCapabilities { return { ...(this.active?.capabilities ?? VIZIO_HTML5_CAPABILITIES), platform: this.platform, canSetVolume: true,
+    ...(this.inspectedAudio.length ? { canSelectAudioTrack: true } : {}), ...(this.captions ? { canSelectTextTrack: true, canDisableTextTrack: true } : {}) }; }
   private active?: Player;
   private unsubscribe?: () => void;
   private listeners = new Set<PlayerListener>();
@@ -33,6 +36,8 @@ export class Html5FallbackAdapter implements Player {
   private captionTracks: PlayerSnapshot['tracks']['text'] = [];
   private captionId: string | null = null;
   private captionText: readonly string[] = [];
+  private inspectedAudio: PlayerSnapshot['tracks']['audio'] = [];
+  private audioInspector?: { dispose(): void };
   constructor(private readonly media: HtmlMediaLike, private readonly canvas?: HTMLCanvasElement, private readonly platform: 'html5' | 'vizio' = 'html5') {}
   get snapshot(): PlayerSnapshot { return this.value; }
   subscribe(listener: PlayerListener): () => void { this.listeners.add(listener); listener(this.value); return () => this.listeners.delete(listener); }
@@ -44,8 +49,10 @@ export class Html5FallbackAdapter implements Player {
     const previous = this.active; this.active = undefined; await previous?.dispose();
     if (generation !== this.generation) return;
     this.pausedIntent = request.paused ?? false;
+    this.audioInspector?.dispose(); this.audioInspector = undefined; this.inspectedAudio = [];
     this.captions?.dispose(); this.captions = undefined; this.captionTracks = []; this.captionText = []; this.captionId = null;
     if (browserPlaybackPolicy().clientInspection && request.deliveryMode === 'direct') this.captions = new BrowserCaptions(request.url, (tracks, selected, captions) => {
+      if (generation !== this.generation) return;
       this.captionTracks = tracks; this.captionId = selected; this.captionText = captions;
     });
     this.request = request; this.opening = true; this.recovering = false; this.fallbackReason = undefined;
@@ -56,7 +63,31 @@ export class Html5FallbackAdapter implements Player {
     if (browserPlaybackPolicy().localRemux && typeof MediaSource !== 'undefined' && this.media instanceof HTMLVideoElement) this.paths.push('mse');
     this.fallbackReason = unavailable;
     try {
-      await this.nextPath(request, generation);
+      const preparePaused = request.paused || !!request.preferredSubtitleLanguage;
+      await this.nextPath({ ...request, paused: preparePaused }, generation);
+      if (generation !== this.generation) return;
+      const playingAudio = this.value.tracks.audio.find(track => track.id === this.value.tracks.selectedAudioId);
+      if (request.preferredAudioLanguage && (!playingAudio?.language || mediaLanguage(playingAudio.language) !== mediaLanguage(request.preferredAudioLanguage))) {
+        await this.loadAudioTracks(false);
+        if (generation !== this.generation) return;
+        let selected = this.value.tracks.audio.find(track => track.language && mediaLanguage(track.language) === mediaLanguage(request.preferredAudioLanguage!));
+        if (selected && !selected.available) { await this.serverAudioChoices(); selected = this.value.tracks.audio.find(track => track.language && mediaLanguage(track.language) === mediaLanguage(request.preferredAudioLanguage!)); }
+        if (selected?.delivery === 'server' && selected.inputIndex !== undefined) throw new PlayerOperationError('unsupported-format', 'Preferred audio requires compatible delivery.', undefined, 'audio-codec', { audioTrackIndex: selected.inputIndex });
+        if (selected?.available && this.value.tracks.selectedAudioId !== selected.id) await this.selectAudioTrack(selected.id);
+      }
+      if (request.preferredSubtitleLanguage) {
+        try {
+          await this.loadTextTracks();
+          if (generation !== this.generation) return;
+          const selected = this.value.tracks.text.find(track => track.available && track.language && mediaLanguage(track.language) === mediaLanguage(request.preferredSubtitleLanguage!));
+          if (selected) await this.selectTextTrack(selected.id);
+          else this.publish({ ...this.value, notice: 'Preferred subtitles are unavailable.' });
+        } catch { if (generation === this.generation) this.publish({ ...this.value, notice: 'Subtitles could not be loaded.' }); }
+        if (!request.paused && generation === this.generation) {
+          try { await this.requireActive().play(); }
+          catch (cause) { const error = mediaFailure(cause); if (error.code !== 'autoplay-blocked') throw error; this.publish({ ...this.value, state: 'paused', notice: 'Select Play to enable browser audio.' }); }
+        }
+      }
     } finally { if (generation === this.generation) { this.opening = false; this.cancelOpening = undefined; } }
   }
   private async nextPath(request: OpenPlayerRequest, generation: number): Promise<void> {
@@ -96,7 +127,10 @@ export class Html5FallbackAdapter implements Player {
       }
       if (snapshot.state === 'idle') return;
       this.captions?.tick(snapshot.time.positionSeconds);
-      this.publish({ ...snapshot, sessionId: generation, ...(this.captionTracks.length ? { tracks: { ...snapshot.tracks, text: this.captionTracks, selectedTextId: this.captionId }, captions: this.captionText } : {}), diagnostics: snapshot.diagnostics ? { ...snapshot.diagnostics, ...(this.fallbackReason ? { fallbackReason: this.fallbackReason } : {}) } : undefined });
+      this.publish({ ...snapshot, sessionId: generation, tracks: { ...snapshot.tracks,
+        ...(this.inspectedAudio.length ? { audio: this.inspectedAudio } : {}), ...(this.captionTracks.length ? { text: this.captionTracks, selectedTextId: this.captionId } : {}) },
+        captions: this.captionTracks.length ? this.captionText : snapshot.captions,
+        notice: this.value.notice, diagnostics: snapshot.diagnostics ? { ...snapshot.diagnostics, ...(this.fallbackReason ? { fallbackReason: this.fallbackReason } : {}) } : undefined });
     });
   }
   private async recover(generation: number, snapshot: PlayerSnapshot): Promise<void> {
@@ -116,13 +150,68 @@ export class Html5FallbackAdapter implements Player {
   async seek(position: number): Promise<void> { await this.requireActive().seek(position); }
   async setVolume(level: number): Promise<void> { this.volume = Math.min(1, Math.max(0, Number.isFinite(level) ? level : 1)); if (this.volume > 0) this.muted = false; await this.active?.setVolume?.(this.volume); }
   async setMuted(muted: boolean): Promise<void> { this.muted = muted; await this.active?.setMuted?.(muted); }
-  async selectAudioTrack(id: string): Promise<void> { await this.requireActive().selectAudioTrack(id); }
-  async loadTextTracks(): Promise<void> { await this.captions?.discover(); this.publish({ ...this.value, tracks: { ...this.value.tracks, text: this.captionTracks, selectedTextId: this.captionId }, captions: this.captionText }); }
-  async selectTextTrack(id: string | null): Promise<void> { if (this.captions) { await this.captions.select(id, this.value.time.positionSeconds); this.publish({ ...this.value, tracks: { ...this.value.tracks, text: this.captionTracks, selectedTextId: id }, captions: [] }); } else await this.requireActive().selectTextTrack(id); }
+  async loadAudioTracks(resolveServer = true): Promise<void> {
+    if (!this.request || this.request.deliveryMode !== 'direct' || !browserPlaybackPolicy().localRemux) return;
+    if (this.active?.capabilities.canSelectAudioTrack) {
+      await this.active.loadAudioTracks?.();
+      this.inspectedAudio = this.active.snapshot.tracks.audio;
+      if (resolveServer) await this.serverAudioChoices(); return;
+    }
+    if (this.inspectedAudio.length) return;
+    const generation = this.generation;
+    const { Input, UrlSource, ALL_FORMATS } = await import('mediabunny');
+    if (generation !== this.generation) return;
+    const input = this.audioInspector = new Input({ source: new UrlSource(this.request.url, { fetchFn: sessionMediaFetch(this.request.url), maxCacheSize: 32 * 1024 * 1024 }), formats: ALL_FORMATS });
+    try {
+      const video = await input.getPrimaryVideoTrack();
+      if (!video) return;
+      const { tracks, choices } = await audioChoices(video);
+      const available = await Promise.all(tracks.map(async track => typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(`audio/mp4; codecs="${await track.getCodecParameterString()}"`)));
+      if (generation !== this.generation) return;
+      this.inspectedAudio = choices.map((choice, index) => ({ ...choice, available: available[index] }));
+      if (resolveServer) await this.serverAudioChoices();
+      this.publish({ ...this.value, tracks: { ...this.value.tracks, audio: this.inspectedAudio } });
+    } finally { input.dispose(); if (this.audioInspector === input) this.audioInspector = undefined; }
+  }
+  private async serverAudioChoices(): Promise<void> {
+    if (!this.request || !this.inspectedAudio.some(track => !track.available)) return;
+    const generation = this.generation;
+    const response = await sessionMediaFetch(this.request.url)(new URL('tracks.json', this.request.url));
+    const result = await response.json() as { audio?: Array<{ input_index: number; codec?: string; language?: string; title: string; selectable: boolean }> };
+    if (generation !== this.generation) return;
+    const unavailable = this.inspectedAudio.filter(track => !track.available);
+    const server = (result.audio ?? []).filter(track => track.selectable && Number.isInteger(track.input_index) && track.input_index >= 0 && track.input_index <= 65535
+      && unavailable.some(local => local.codec === track.codec && (!local.language || local.language === 'und' || local.language === track.language)))
+      .map(track => ({ id: `server-audio:${track.input_index}`, label: track.title, language: track.language, codec: track.codec, available: true, delivery: 'server' as const, inputIndex: track.input_index }));
+    if (server.length) this.inspectedAudio = [...this.inspectedAudio.filter(track => track.available), ...server];
+    this.publish({ ...this.value, tracks: { ...this.value.tracks, audio: this.inspectedAudio } });
+  }
+  async selectAudioTrack(id: string): Promise<void> {
+    if (this.requireActive().capabilities.canSelectAudioTrack) { await this.requireActive().selectAudioTrack(id); return; }
+    if (!this.inspectedAudio.some(track => track.id === id && track.available) || !this.request) throw new PlayerOperationError('unsupported-operation', 'This audio track cannot be selected locally.');
+    const generation = this.generation;
+    const previous = { ...this.request, startAtSeconds: this.value.time.positionSeconds - (this.request.timelineOffsetSeconds ?? 0), paused: this.value.state === 'paused' };
+    this.opening = true; this.clearSubscription(); await this.active?.dispose(); this.inspectedAudio = [];
+    try { this.paths = ['mse']; await this.nextPath({ ...previous, audioTrackId: id }, generation); }
+    catch (cause) { if (generation === this.generation) { this.paths = ['native']; await this.nextPath(previous, generation); } throw cause; }
+    finally { if (generation === this.generation) this.opening = false; }
+  }
+  async loadTextTracks(): Promise<void> {
+    if (this.active?.snapshot.tracks.text.length) return;
+    await this.captions?.discover();
+    if (this.captionTracks.length) this.publish({ ...this.value, tracks: { ...this.value.tracks, text: this.captionTracks, selectedTextId: this.captionId }, captions: this.captionText });
+  }
+  async selectTextTrack(id: string | null): Promise<void> {
+    if (this.captions && (id?.startsWith('subtitle:') || id === null && this.captionTracks.length)) {
+      await this.active?.selectTextTrack(null).catch(() => undefined);
+      await this.captions.select(id, this.value.time.positionSeconds); this.publish({ ...this.value, tracks: { ...this.value.tracks, text: this.captionTracks, selectedTextId: id }, captions: [] });
+    } else await this.requireActive().selectTextTrack(id);
+  }
   async selectQuality(id: string): Promise<void> { await this.requireActive().selectQuality?.(id); }
   async preview(position: number): Promise<Blob | null> { return await this.requireActive().preview?.(position) ?? null; }
   async stop(): Promise<void> {
     this.captions?.dispose(); this.captions = undefined;
+    this.audioInspector?.dispose(); this.audioInspector = undefined;
     const generation = ++this.generation; this.cancelOpening?.(); this.cancelOpening = undefined; this.clearSubscription(); this.unsubscribe = undefined;
     const player = this.active; this.active = undefined; await player?.dispose();
     if (generation === this.generation) { this.showCanvas(false); this.publish({ ...IDLE_SNAPSHOT, sessionId: generation, state: 'stopped' }); }

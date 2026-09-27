@@ -33,6 +33,8 @@ export function adapterRequest(session: PlaybackSessionView, kind: PlaybackKind,
     adoptEngineDuration: direct,
     deliveryMode: direct ? 'direct' : 'managed',
     deliveryFormat: session.format,
+    deliveryDecision: ['encode', 'transcode'].includes(session.videoMode) ? 'video-conversion'
+      : ['encode', 'transcode'].includes(session.audioMode) ? 'audio-conversion' : direct ? 'original' : 'server-remux',
     paused,
     authorization: session.authorization,
   };

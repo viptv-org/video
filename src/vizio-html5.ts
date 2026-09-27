@@ -116,7 +116,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
     this.pauseRequested = request.paused ?? false;
     this.expectedVideo = request.expectedVideo !== false;
     const sessionId = this.startSession(request.kind);
-    this.update(sessionId, { diagnostics: { engine: 'native-html', networkTransport: new URL(request.url, location.href).pathname.startsWith('/media/') ? 'browser-proxy' : 'direct', transport: /\.m3u8(?:[?#]|$)/i.test(request.url) ? 'hls' : 'file' }, volume: { level: this.media.volume ?? 1, muted: this.media.muted ?? false } });
+    this.update(sessionId, { diagnostics: { decision: request.deliveryDecision, engine: 'native-html', networkTransport: new URL(request.url, location.href).pathname.startsWith('/media/') ? 'browser-proxy' : 'direct', transport: /\.m3u8(?:[?#]|$)/i.test(request.url) ? 'hls' : 'file' }, volume: { level: this.media.volume ?? 1, muted: this.media.muted ?? false } });
     this.activeKind = request.kind;
     this.timelineOffsetSeconds = nonNegative(request.timelineOffsetSeconds ?? 0);
     this.timelineDurationSeconds = request.timelineDurationSeconds;
@@ -204,7 +204,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
       };
       openingTimer = setTimeout(() => failOpen(new PlayerOperationError('prepare-failed', 'The selected source did not become ready in time.')), 20000);
       const startMse = () => {
-        this.update(sessionId, { diagnostics: { engine: 'hls.js', networkTransport: 'browser-proxy', transport: 'hls' } });
+        this.update(sessionId, { diagnostics: { decision: request.deliveryDecision, engine: 'hls.js', networkTransport: 'browser-proxy', transport: 'hls' } });
         if (!Hls.isSupported()) throw new PlayerOperationError('unsupported-format', 'This browser cannot play HLS. Native HLS or MediaSource support is required.');
         const url = checkedMediaUrl(request.url);
         const prefix = url.pathname.slice(0, url.pathname.lastIndexOf('/') + 1);
