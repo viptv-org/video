@@ -60,7 +60,7 @@ export class Html5FallbackAdapter implements Player {
     const unavailable = mediabunnyUnavailable(this.canvas);
     this.paths = unavailable ? ['native'] : ['bunny', 'native'];
     if (request.deliveryFormat === 'fmp4') this.paths = ['native'];
-    if (browserPlaybackPolicy().localRemux && typeof MediaSource !== 'undefined' && this.media instanceof HTMLVideoElement) this.paths.push('mse');
+    if (browserPlaybackPolicy().localRemux && typeof BigInt !== 'undefined' && typeof MediaSource !== 'undefined' && this.media instanceof HTMLVideoElement) this.paths.push('mse');
     this.fallbackReason = unavailable;
     try {
       const preparePaused = request.paused || !!request.preferredSubtitleLanguage;
@@ -158,6 +158,7 @@ export class Html5FallbackAdapter implements Player {
       if (resolveServer) await this.serverAudioChoices(); return;
     }
     if (this.inspectedAudio.length) return;
+    if (typeof BigInt === 'undefined') { if (resolveServer) await this.serverAudioChoices(true); return; }
     const generation = this.generation;
     const { Input, UrlSource, ALL_FORMATS } = await import('mediabunny');
     if (generation !== this.generation) return;
@@ -173,15 +174,15 @@ export class Html5FallbackAdapter implements Player {
       this.publish({ ...this.value, tracks: { ...this.value.tracks, audio: this.inspectedAudio } });
     } finally { input.dispose(); if (this.audioInspector === input) this.audioInspector = undefined; }
   }
-  private async serverAudioChoices(): Promise<void> {
-    if (!this.request || !this.inspectedAudio.some(track => !track.available)) return;
+  private async serverAudioChoices(all = false): Promise<void> {
+    if (!this.request || !all && !this.inspectedAudio.some(track => !track.available)) return;
     const generation = this.generation;
     const response = await sessionMediaFetch(this.request.url)(new URL('tracks.json', this.request.url));
     const result = await response.json() as { audio?: Array<{ input_index: number; codec?: string; language?: string; title: string; selectable: boolean }> };
     if (generation !== this.generation) return;
     const unavailable = this.inspectedAudio.filter(track => !track.available);
     const server = (result.audio ?? []).filter(track => track.selectable && Number.isInteger(track.input_index) && track.input_index >= 0 && track.input_index <= 65535
-      && unavailable.some(local => local.codec === track.codec && (!local.language || local.language === 'und' || local.language === track.language)))
+      && (all || unavailable.some(local => local.codec === track.codec && (!local.language || local.language === 'und' || local.language === track.language))))
       .map(track => ({ id: `server-audio:${track.input_index}`, label: track.title, language: track.language, codec: track.codec, available: true, delivery: 'server' as const, inputIndex: track.input_index }));
     if (server.length) this.inspectedAudio = [...this.inspectedAudio.filter(track => track.available), ...server];
     this.publish({ ...this.value, tracks: { ...this.value.tracks, audio: this.inspectedAudio } });
