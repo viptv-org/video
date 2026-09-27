@@ -96,5 +96,15 @@ The Vizio's largest sampled buffer was 30.05 seconds in total, with at most
 21.99 seconds ahead (the 20-second admission limit plus one fragment). The TV
 returned to VIPTV afterwards. Higher-resolution compatibility remains the
 separate short-test envelope above; this soak does not qualify sustained HDR
-or 4K. Final checks: 96 video tests, 217 client tests, 80 engine tests including
+or 4K. Final checks: 97 video tests, 217 client tests, 80 engine tests including
 real FFmpeg, 208 server tests and isolated container acceptance passed.
+
+### Irregular live GOP regression
+
+A real production channel exposed changing copied-HLS segment duration after
+startup. Qualified copied live delivery now uses continuous fragmented MP4;
+its supervisor follows muxer media-time progress and respects consumer
+backpressure. hls.js surfaces an explicit HTTP 406 media refusal immediately.
+A paced HTTPS MPEG-TS/AC-3 fixture played through the real Rust engine for
+45 seconds in Chromium and the physical Vizio, preserving H.264 video and
+converting only audio to AAC. The Vizio reported 1,472 frames and zero drops.
