@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { configureBrowserPlayback } from '../src/browser-policy';
 import { Html5FallbackAdapter } from '../src/html5-fallback';
 import { IDLE_SNAPSHOT, type PlayerListener, type PlayerSnapshot, type OpenPlayerRequest } from '../src/types';
 const state = vi.hoisted(() => ({ reject: false, pending: false, instances: [] as Array<{ emit(snapshot: PlayerSnapshot): void; disposed: boolean; request?: OpenPlayerRequest }> }));
@@ -21,8 +22,20 @@ function media() {
 }
 const request = { url: `${location.origin}/media/lease/cap/movie.mp4`, kind: 'vod' as const, startAtSeconds: 12, timelineOffsetSeconds: 50, paused: true };
 beforeEach(() => { state.reject = false; state.pending = false; state.instances.length = 0; vi.stubGlobal('isSecureContext', true); vi.stubGlobal('VideoDecoder', class {}); vi.stubGlobal('AudioDecoder', class {}); vi.stubGlobal('AudioContext', class {}); });
-afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { configureBrowserPlayback({localRemux:false,clientInspection:false}); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe('real MediaBunny preference and local fallback boundary', () => {
+  it('does not reread a single-consumer managed MP4 after native refusal', async () => {
+    configureBrowserPlayback({ localRemux: true });
+    vi.stubGlobal('MediaSource', class { static isTypeSupported() { return true; } });
+    const video = media(), player = new Html5FallbackAdapter(video, document.createElement('canvas'));
+    await player.open({ ...request, deliveryMode: 'managed', deliveryFormat: 'fmp4' });
+    Object.defineProperty(video, 'error', { value: { code: 4, message: 'Unsupported' } });
+    video.dispatchEvent(new Event('error'));
+    await vi.waitFor(() => expect(player.snapshot.state).toBe('error'));
+    expect(state.instances).toHaveLength(0);
+    expect(video.load).toHaveBeenCalledTimes(1);
+    await player.dispose();
+  });
   it('uses decoded-sample backend instead of assigning the video URL when available', async () => {
     const video = media(), canvas = document.createElement('canvas');
     const player = new Html5FallbackAdapter(video, canvas); await player.open(request);

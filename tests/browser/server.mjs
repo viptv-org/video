@@ -18,7 +18,7 @@ const server = await createServer({ root: process.cwd(), configFile: false, serv
       }
       if (req.url?.startsWith('/qualification/')) {
         const name = basename(new URL(req.url, 'http://localhost').pathname);
-        const file = resolve('/tmp/viptv-browser-harness', name);
+        const file = resolve(process.env.MEDIA_HARNESS || '/tmp/viptv-browser-harness', name);
         try { const body = readFileSync(file); res.writeHead(200, { 'Content-Type': name.endsWith('.html') ? 'text/html' : name.endsWith('.wasm') ? 'application/wasm' : 'text/javascript', 'Content-Length': body.length }); res.end(body); } catch { res.statusCode = 404; res.end(); } return;
       }
       if (req.url?.startsWith('/results') && req.method === 'POST') { let body = ''; req.on('data', chunk => { body += chunk; if (body.length > 1024 * 1024) req.destroy(); }); req.on('end', () => { const value = JSON.parse(body); writeFileSync(resultFile, JSON.stringify(value, null, 2)); console.log('TV_RESULT', JSON.stringify({ stage: value.stage, results: value.results, time: value.snapshot?.time, state: value.snapshot?.state })); res.end('ok'); }); return; }

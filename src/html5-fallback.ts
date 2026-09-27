@@ -59,8 +59,10 @@ export class Html5FallbackAdapter implements Player {
     this.publish({ ...IDLE_SNAPSHOT, sessionId: generation, kind: request.kind, state: 'opening' });
     const unavailable = mediabunnyUnavailable(this.canvas);
     this.paths = unavailable ? ['native'] : ['bunny', 'native'];
+    // Managed continuous MP4 has one bounded response body; a second local
+    // consumer cannot reopen it. A native refusal needs a replacement session.
     if (request.deliveryFormat === 'fmp4') this.paths = ['native'];
-    if (browserPlaybackPolicy().localRemux && typeof BigInt !== 'undefined' && typeof MediaSource !== 'undefined' && this.media instanceof HTMLVideoElement) this.paths.push('mse');
+    if (request.deliveryFormat !== 'fmp4' && browserPlaybackPolicy().localRemux && typeof BigInt !== 'undefined' && typeof MediaSource !== 'undefined' && this.media instanceof HTMLVideoElement) this.paths.push('mse');
     this.fallbackReason = unavailable;
     try {
       const preparePaused = request.paused || !!request.preferredSubtitleLanguage;

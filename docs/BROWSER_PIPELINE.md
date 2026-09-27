@@ -52,7 +52,7 @@ controls. Short compatibility cases do not establish every sustained gate.
 
 ## Reproduce
 
-`python3 tests/browser/make-fixtures.py --hd --soak` builds synthetic media.
+`python3 tests/browser/make-fixtures.py <fixture-directory> --hd --soak` builds synthetic media.
 Run `tests/browser/server.mjs` with `MEDIA_TLS_CERT`, `MEDIA_TLS_KEY` and a trusted
 HTTPS hostname, then `MEDIA_TEST_URL=<https harness URL>
 MEDIA_TEST_BROWSERS=chromium,firefox,webkit node tests/browser/check.mjs`.
@@ -60,3 +60,20 @@ MEDIA_TEST_BROWSERS=chromium,firefox,webkit node tests/browser/check.mjs`.
 The backend example `browser_check` accepts a fixed synthetic fixture whitelist,
 runs on loopback and uses no accounts or production database. Keep diagnostics,
 source credentials, device tokens and private results outside Git.
+
+### Startup comparison
+
+Five alternating runs per case in Chromium, using trusted local HTTPS and
+fresh pages with the same synthetic media. Times below measure adapter open to
+its first decoded canvas frame; module loading, provider latency and server
+preparation are excluded. Baseline is video `6c6545e`; candidate is `af63620`.
+
+| Source | Baseline p50 / p95 | Candidate p50 / p95 |
+|---|---:|---:|
+| H.264/AAC MKV | 45.6 / 68.8 ms | 43.5 / 47.6 ms |
+| H.264/AAC MP4 | 33.1 / 36.6 ms | 26.9 / 33.5 ms |
+| H.264/AC-3 MKV | 47.8 / 62.7 ms | 57.3 / 68.1 ms |
+
+The AAC cases improved; the AC-3 extension case increased about 5 ms at p95.
+These small samples measure local preparation, not end-to-end household startup
+percentiles. Binary promotion uses the separate server benchmark.
