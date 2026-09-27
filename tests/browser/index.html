@@ -1,0 +1,5 @@
+<!doctype html><html><meta charset="utf-8"><title>VIPTV media qualification</title>
+<style>body{background:#101014;color:#eee;font:20px monospace}video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}pre{position:absolute;z-index:5;background:#000b;max-width:85%;white-space:pre-wrap}</style>
+<video id="video" muted playsinline></video><canvas id="canvas"></canvas><pre id="report">Preparing qualification…</pre>
+<script>addEventListener('error',function(e){fetch('/results',{method:'POST',body:JSON.stringify({stage:'script-error',error:e.message,source:e.filename,userAgent:navigator.userAgent})})});addEventListener('unhandledrejection',function(e){fetch('/results',{method:'POST',body:JSON.stringify({stage:'script-error',error:String(e.reason),userAgent:navigator.userAgent})})});</script>
+<script type="module" src="/tests/browser/harness.ts"></script></html>

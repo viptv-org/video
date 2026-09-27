@@ -168,7 +168,8 @@ export class PlaybackSessionController<
     // A direct-URL client never escalates to managed delivery; the decoder
     // failure surfaces honestly instead.
     if (active.request.capabilities.directUrls) return false;
-    const request = recoveryRequest(active.session, active.request, snapshot.error.code);
+    const recovery = recoveryRequest(active.session, active.request, snapshot.error.code);
+    const request = recovery ? { ...recovery, ...(snapshot.error.reason ? { conversionReason: snapshot.error.reason } : {}) } : undefined;
     if (!request || this.recoveredSessions.has(active.session.id)) return false;
     this.recoveredSessions.add(active.session.id);
     this.cancelNext(false);
@@ -339,7 +340,7 @@ export class PlaybackSessionController<
           if (!stillWanted() || !recovery) throw cause;
           await this.options.backend.stopPlayback(session.id);
           if (!stillWanted()) throw new DOMException('Playback operation was cancelled.', 'AbortError');
-          request = recovery;
+          request = { ...recovery, ...(cause instanceof PlayerOperationError && cause.reason ? { conversionReason: cause.reason } : {}) };
           session = await this.options.backend.startPlayback(request);
           if (!stillWanted()) throw new DOMException('Playback operation was cancelled.', 'AbortError');
         }

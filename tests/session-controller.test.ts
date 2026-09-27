@@ -60,19 +60,12 @@ describe('PlaybackSessionController', () => {
     expect(backend.startPlayback).toHaveBeenNthCalledWith(3, expect.objectContaining({ managedOnly: true, forceTranscode: true }));
     expect(active.session.id).toBe('transcoded');
   });
-  it('escalates a network failure to managed delivery', async () => {
+  it('does not convert media when the API network request fails', async () => {
     const player = new FakePlayer();
-    const backend = {
-      startPlayback: vi.fn()
-        .mockRejectedValueOnce(new TvApiError(0, 'Network request failed'))
-        .mockResolvedValueOnce(session('managed', '/index.m3u8', 'managed')),
-      stopPlayback: vi.fn().mockResolvedValue(undefined),
-    };
+    const backend = { startPlayback: vi.fn().mockRejectedValue(new TvApiError(0, 'Network request failed')), stopPlayback: vi.fn() };
     const controller = new PlaybackSessionController({ player, backend, capabilities });
-    const active = await controller.start({ item, source });
-    expect(backend.startPlayback).toHaveBeenCalledTimes(2);
-    expect(backend.startPlayback).toHaveBeenNthCalledWith(2, expect.objectContaining({ managedOnly: true }));
-    expect(active.session.id).toBe('managed');
+    await expect(controller.start({ item, source })).rejects.toMatchObject({ status: 0 });
+    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
   });
   it('stops escalating after two delivery refusals and surfaces the server answer', async () => {
     const player = new FakePlayer();

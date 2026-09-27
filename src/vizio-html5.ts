@@ -1,6 +1,7 @@
 import Hls from 'hls.js';
 import { supportsNativeHls } from './browser-capabilities';
 import { SessionPlayer } from './session';
+import { mediaFailure } from './browser-policy';
 import {
   type OpenPlayerRequest,
   PlayerOperationError,
@@ -68,7 +69,7 @@ export const VIZIO_HTML5_CAPABILITIES: PlayerCapabilities = {
  * handed to the adapter and records the selected rung.
  */
 export class VizioHtml5Adapter extends SessionPlayer {
-  readonly capabilities = VIZIO_HTML5_CAPABILITIES;
+  get capabilities(): PlayerCapabilities { return { ...VIZIO_HTML5_CAPABILITIES, canSelectAudioTrack: !!this.hls }; }
   private readonly handlers: Record<string, () => void>;
   private hls: Hls | null = null;
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
@@ -139,12 +140,14 @@ export class VizioHtml5Adapter extends SessionPlayer {
         cleanup();
         const readyAttempt = attempt;
         this.watchFirstFrame(sessionId);
-        const target = boundedPosition(targetPosition, knownDuration(this.media.duration));
+        const target = request.kind === 'live'
+          ? Math.max(0, this.hls?.liveSyncPosition ?? this.media.currentTime ?? 0)
+          : boundedPosition(targetPosition, knownDuration(this.media.duration));
         try { this.media.currentTime = target; } catch { /* browser may delay seek until a later ready state */ }
         this.update(sessionId, {
           state: this.pauseRequested ? 'paused' : 'ready',
           time: { positionSeconds: this.timelineOffsetSeconds + target, durationSeconds: this.titleDuration() },
-          tracks: tracksFromMedia(this.media),
+          tracks: this.tracks(),
           error: null,
         });
         if (this.pauseRequested) {
@@ -214,9 +217,20 @@ export class VizioHtml5Adapter extends SessionPlayer {
           },
         });
         this.hls = hls;
+        const publishTracks = () => {
+          if (!this.isCurrent(sessionId)) return;
+          this.update(sessionId, { tracks: this.tracks(), qualities: (hls.levels ?? []).map((level, index) => ({
+            id: `hls:${index}`, label: `${level.height}p`, width: level.width, height: level.height, bitrate: level.bitrate,
+          })), selectedQualityId: hls.autoLevelEnabled ? 'auto' : `hls:${hls.currentLevel}` });
+        };
+        hls.on(Hls.Events.MANIFEST_PARSED, publishTracks);
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, publishTracks);
+        hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, publishTracks);
+        hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, publishTracks);
+        hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, publishTracks);
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal || !this.isCurrent(sessionId)) return;
-          failOpen(new PlayerOperationError(data.type === Hls.ErrorTypes.NETWORK_ERROR ? 'connection-failed' : 'unsupported-format', 'The selected HLS source could not be played.'));
+          failOpen(new PlayerOperationError(data.response?.code === 406 ? 'unsupported-format' : data.type === Hls.ErrorTypes.NETWORK_ERROR ? 'connection-failed' : 'unsupported-format', 'The selected HLS source could not be played.', undefined, data.response?.code === 406 ? 'container' : undefined));
         });
         hls.attachMedia(this.media as HTMLMediaElement);
         hls.loadSource(url.href);
@@ -264,7 +278,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
       await this.media.play();
       this.update(sessionId, { state: 'playing', error: null });
     } catch (cause) {
-      const error = new PlayerOperationError('prepare-failed', 'The browser could not resume playback.', cause);
+      const error = mediaFailure(cause);
       this.fail(sessionId, error.toFailure());
       throw error;
     }
@@ -312,12 +326,35 @@ export class VizioHtml5Adapter extends SessionPlayer {
     this.terminal('disposed');
   }
 
-  async selectAudioTrack(_: string): Promise<void> {
-    throw new PlayerOperationError('unsupported-operation', 'The Vizio HTML player does not expose audio-track selection.');
+  async selectAudioTrack(id: string): Promise<void> {
+    const index = /^hls-audio:(\d+)$/.exec(id)?.[1];
+    if (!this.hls || index === undefined || !this.hls.audioTracks[Number(index)]) throw new PlayerOperationError('unsupported-operation', 'This audio track is unavailable.');
+    this.hls.audioTrack = Number(index); this.update(this.snapshot.sessionId, { tracks: this.tracks() });
+  }
+  async selectQuality(id: string): Promise<void> {
+    if (!this.hls) throw new PlayerOperationError('unsupported-operation', 'Quality selection is unavailable.');
+    const index = id === 'auto' ? -1 : Number(/^hls:(\d+)$/.exec(id)?.[1]);
+    if (!Number.isInteger(index) || index < -1 || index >= this.hls.levels.length) throw new PlayerOperationError('unsupported-operation', 'Quality is unavailable.');
+    this.hls.currentLevel = index; this.update(this.snapshot.sessionId, { selectedQualityId: id });
+  }
+  private tracks(): PlayerTracks {
+    if (!this.hls) return tracksFromMedia(this.media);
+    return {
+      audio: (this.hls.audioTracks ?? []).map((track, index) => ({ id: `hls-audio:${index}`, label: track.name || track.lang || `Audio ${index + 1}`, language: track.lang, available: true })),
+      text: (this.hls.subtitleTracks ?? []).map((track, index) => ({ id: `hls-text:${index}`, label: track.name || track.lang || `Subtitle ${index + 1}`, language: track.lang, available: true })),
+      selectedAudioId: this.hls.audioTrack >= 0 ? `hls-audio:${this.hls.audioTrack}` : null,
+      selectedTextId: this.hls.subtitleTrack >= 0 ? `hls-text:${this.hls.subtitleTrack}` : null,
+    };
   }
 
   async selectTextTrack(trackId: string | null): Promise<void> {
     const sessionId = this.activeSessionOrThrow();
+    if (this.hls) {
+      const index = trackId === null ? -1 : Number(/^hls-text:(\d+)$/.exec(trackId)?.[1]);
+      if (!Number.isInteger(index) || index < -1 || index >= this.hls.subtitleTracks.length) throw new PlayerOperationError('unsupported-operation', 'Subtitle is unavailable.');
+      this.hls.subtitleTrack = index; this.hls.subtitleDisplay = index >= 0;
+      this.update(sessionId, { tracks: this.tracks() }); return;
+    }
     const tracks = selectableTextTracks(this.media);
     if (trackId === null) {
       for (const { track } of tracks) track.mode = 'disabled';
@@ -358,7 +395,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
     if ((this.media.videoWidth ?? 0) > 0) this.clearFirstFrameWatchdog();
     const sessionId = this.snapshot.sessionId;
     if (!this.isCurrent(sessionId)) return;
-    this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight } : undefined, time: { positionSeconds: this.timelineOffsetSeconds + this.media.currentTime, durationSeconds: this.titleDuration() }, tracks: tracksFromMedia(this.media) });
+    this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight } : undefined, time: { positionSeconds: this.timelineOffsetSeconds + this.media.currentTime, durationSeconds: this.titleDuration() }, tracks: this.tracks() });
   }
 
   private onCanPlay(): void { this.onMetadata(); }

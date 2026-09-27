@@ -1,26 +1,14 @@
-import { Input, UrlSource, ALL_FORMATS, CanvasSink, AudioBufferSink, type InputTrack, type InputVideoTrack, type WrappedCanvas, type WrappedAudioBuffer } from 'mediabunny';
+import { Input, UrlSource, ALL_FORMATS, CanvasSink, AudioBufferSink, type InputTrack, type InputVideoTrack, type InputAudioTrack, type WrappedCanvas, type WrappedAudioBuffer } from 'mediabunny';
 import { SessionPlayer } from './session';
 import { PlayerOperationError, growOnlyDuration, timelineDuration, type OpenPlayerRequest, type PlayerCapabilities } from './types';
 
-/** Only opaque backend media capabilities may reach either browser or native HTTP. */
-export function sessionMediaFetch(url: string): typeof fetch {
-  const delivery = new URL(url, location.href);
-  const prefix = delivery.pathname.slice(0, delivery.pathname.lastIndexOf('/') + 1);
-  return async (input, init) => {
-    const target = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, delivery);
-    if (target.origin !== delivery.origin || !target.pathname.startsWith(prefix) || !target.pathname.startsWith('/media/'))
-      throw new PlayerOperationError('authorization-unsupported', 'The playlist contains a resource outside its playback session.');
-    const native = '__TAURI_INTERNALS__' in window;
-    const response = native
-      ? await (await import('@tauri-apps/plugin-http')).fetch(target.href, { ...init, redirect: 'error', maxRedirections: 0 })
-      : await fetch(target.href, { ...init, redirect: 'error' });
-    return response;
-  };
-}
-
+import { mediaFailure } from './browser-policy';
+import { audioChoices, chooseAudio, trackId, videoChoices, AdaptiveQuality } from './media-tracks';
+import { sessionMediaFetch } from './session-media-fetch';
+export { sessionMediaFetch } from './session-media-fetch';
 export const MEDIABUNNY_CAPABILITIES: PlayerCapabilities = {
   platform: 'html5', engine: 'Mediabunny / WebCodecs', directNative: 'probe-required', adaptiveStreaming: 'probe-required', drm: 'unsupported',
-  canPause: true, canSeek: true, canSetVolume: true, canSelectAudioTrack: false, canSelectTextTrack: false, canDisableTextTrack: false,
+  canPause: true, canSeek: true, canSetVolume: true, canSelectAudioTrack: true, canSelectTextTrack: false, canDisableTextTrack: false,
   canUseCookies: false, canUseUserAgent: false,
   limitations: ['Actual tracks must pass WebCodecs decoding checks.', 'Track replacement is performed through the selected backend session.', 'Encrypted DRM media uses the compatible native fallback when available.'],
 };
@@ -39,6 +27,28 @@ export class MediabunnyAdapter extends SessionPlayer {
   private nodes = new Set<AudioBufferSourceNode>();
   private request?: OpenPlayerRequest;
   private generation = 0;
+  private sourceGeneration = 0;
+  private running = false;
+  private animation?: number;
+  private frames: WrappedCanvas[] = [];
+  private videoEnd = 0;
+  private audioEnd = 0;
+  private audioTrack?: InputAudioTrack;
+  private scheduled = new Set<WrappedAudioBuffer>();
+  private qualityId = 'auto';
+  private adaptive = new AdaptiveQuality();
+  private switching = false;
+  private lastSwitch = 0;
+  private videoChoices: Awaited<ReturnType<typeof videoChoices>> = { tracks: [], choices: [] };
+  private liveWindow?: { start: number; end: number; target: number };
+  private presented = 0;
+  private dropped = 0;
+  private previewPending = false;
+  private openingGeneration = 0;
+  private performanceStart = 0;
+  private liveStalls = 0;
+  private bufferingSince = 0;
+  private lastLiveReconnect = 0;
   private playing = false;
   private position = 0;
   private firstTimestamp = 0;
@@ -58,33 +68,43 @@ export class MediabunnyAdapter extends SessionPlayer {
   /** Audio packets decoded ahead of the clock, scheduled as the clock drains. */
   private audioQueue: WrappedAudioBuffer[] = [];
   /** True while the audio producer is still filling the queue. */
-  private audioDecoding = false;
   /** Bound on queued audio packets: enough readahead to feed the preseek gate. */
   private readonly audioQueueLimit = 120;
 
   constructor(private readonly canvas: HTMLCanvasElement) { super(); }
 
   async open(request: OpenPlayerRequest): Promise<void> {
+    const opening = ++this.openingGeneration;
     await this.release();
+    if (opening !== this.openingGeneration) return;
     const session = this.startSession(request.kind);
+    if (this.request?.url !== request.url) { this.liveStalls = 0; this.lastLiveReconnect = 0; }
     this.request = request;
+    this.performanceStart = performance.now(); this.presented = 0; this.dropped = 0;
     this.observedTitleDuration = null;
+    const openedAt = performance.now();
     const token = ++this.generation;
+    const sourceToken = this.sourceGeneration;
     if (request.authorization?.cookie || request.authorization?.userAgent)
       throw new PlayerOperationError('authorization-unsupported', 'Playback requires a backend-compatible media URL.');
     const input = this.input = new Input({
       // Readahead and bounded retries stay the library defaults: disabling
       // retries turned one evicted segment of a rolling playlist into a hard
       // read failure, and a 32 MiB cache still bounds memory per session.
-      source: new UrlSource(request.url, { fetchFn: sessionMediaFetch(request.url), maxCacheSize: 32 * 1024 * 1024 }),
+      source: new UrlSource(request.url, { fetchFn: sessionMediaFetch(request.url, s => this.adaptive.sample(s.bytes, s.seconds)), maxCacheSize: 32 * 1024 * 1024 }),
       formats: ALL_FORMATS,
       formatOptions: { hls: { offsetTimestampsByDateTime: false } },
     });
-    const video = await input.getPrimaryVideoTrack();
+    this.videoChoices = await videoChoices(input);
+    this.qualityId = request.qualityId ?? 'auto';
+    const video = this.videoChoices.tracks.find(t => trackId('video', t.id) === this.qualityId) ?? await input.getPrimaryVideoTrack();
+    if (request.maximumHeight && video && await video.getDisplayHeight() > request.maximumHeight) throw new PlayerOperationError('unsupported-format', 'The selected quality requires a smaller rendition.', undefined, 'rendering');
     if (!this.isCurrent(session) || token !== this.generation) return;
-    if (!video || !(await ensureDecodable(video))) throw new PlayerOperationError('unsupported-format', 'Mediabunny cannot decode this video track.');
-    const audio = await video.getPrimaryPairableAudioTrack();
-    if (audio && !(await ensureDecodable(audio))) throw new PlayerOperationError('unsupported-format', 'Mediabunny cannot decode this audio track.');
+    if (!video || !(await ensureDecodable(video))) throw new PlayerOperationError('unsupported-format', 'Mediabunny cannot decode this video track.', undefined, 'video-codec');
+    if (await video.hasHighDynamicRange()) throw new PlayerOperationError('unsupported-format', 'HDR requires a qualified presentation path.', undefined, 'rendering');
+    const audio = await chooseAudio(video, request);
+    this.audioTrack = audio ?? undefined;
+    if (audio && !(await ensureDecodable(audio))) throw new PlayerOperationError('unsupported-format', 'Mediabunny cannot decode this audio track.', undefined, 'audio-codec');
     // The example creates the context at the track's own sample rate; mismatched
     // rates resample and drift against the picture.
     const sampleRate = audio ? await audio.getSampleRate() : undefined;
@@ -103,20 +123,27 @@ export class MediabunnyAdapter extends SessionPlayer {
     this.live = request.kind === 'live' || await video.isLive();
     this.duration = this.live ? null : await video.getDurationFromMetadata({ skipLiveWait: true });
     if (this.duration != null) this.duration = Math.max(0, this.duration - start);
-    if (this.live) void this.refreshLiveWindow(token);
+
     this.canvas.width = width; this.canvas.height = height;
     this.videoTrack = video;
     // Pool of two: only the current and next frame are ever alive (example).
-    this.videoSink = new CanvasSink(video, { poolSize: 2, fit: 'contain' });
+    this.videoSink = new CanvasSink(video, { poolSize: 4, fit: 'contain' });
     this.audioSink = audio ? new AudioBufferSink(audio) : undefined;
     this.position = Math.max(0, request.startAtSeconds ?? 0);
 
-    this.decodedEnd = this.position;
+    this.videoEnd = this.audioEnd = this.position;
+    if (this.live) await this.refreshLiveWindow(sourceToken);
+    if (request.kind === 'live' && this.liveWindow) this.position = this.liveWindow.target;
+    await this.publishTracks();
+    this.decodedEnd = this.position; this.videoEnd = this.audioEnd = this.position;
     const frame = await this.videoSink.getCanvas(start + this.position);
     if (!this.isCurrent(session) || token !== this.generation) return;
     if (!frame) throw new PlayerOperationError('unsupported-format', 'Mediabunny did not decode an initial video frame.');
     this.draw(frame);
-    this.update(session, { state: 'ready', diagnostics: { engine: 'mediabunny', networkTransport: '__TAURI_INTERNALS__' in window ? 'native-http' : new URL(request.url, location.href).pathname.startsWith('/media/') ? 'browser-proxy' : 'direct', transport: /\.m3u8(?:[?#]|$)/i.test(request.url) ? 'hls' : 'file', videoCodec: videoConfig?.codec, audioCodec: audioConfig?.codec, width, height }, volume: { level: this.volume, muted: this.muted }, time: this.time() });
+    void input.getMetadataTags().then(tags => {
+      if (sourceToken === this.sourceGeneration) this.update(session, { metadata: { title: typeof tags.title === 'string' ? tags.title : undefined, artist: typeof tags.artist === 'string' ? tags.artist : undefined } });
+    }).catch(() => undefined);
+    this.update(session, { state: 'ready', diagnostics: { firstFrameMs: performance.now() - openedAt, decision: request.deliveryMode === 'managed' ? 'server-remux' : 'original', engine: 'mediabunny', networkTransport: '__TAURI_INTERNALS__' in window ? 'native-http' : new URL(request.url, location.href).pathname.startsWith('/media/') ? 'browser-proxy' : 'direct', transport: /\.m3u8(?:[?#]|$)/i.test(request.url) ? 'hls' : 'file', videoCodec: videoConfig?.codec, audioCodec: audioConfig?.codec, width, height }, volume: { level: this.volume, muted: this.muted }, time: this.time() });
     if (request.paused) this.update(session, { state: 'paused' });
     else await this.play();
   }
@@ -125,30 +152,26 @@ export class MediabunnyAdapter extends SessionPlayer {
     if (this.playing) return;
     if (!this.context || !this.videoSink) throw new PlayerOperationError('invalid-state', 'No prepared MediaBunny session.');
     await this.context.resume();
-    if (this.context.state !== 'running') throw new PlayerOperationError('prepare-failed', 'Select Play to enable browser audio.');
-    this.playing = true;
+    if (this.context.state !== 'running') throw new PlayerOperationError('autoplay-blocked', 'Select Play to enable browser audio.', undefined, 'autoplay');
+    this.playing = true; this.running = false;
+    this.bufferingSince = performance.now();
     this.anchor = this.context.currentTime - this.position;
     const token = ++this.generation;
     const session = this.snapshot.sessionId;
     this.videoDone = false; this.audioDone = !this.audioSink;
     this.videoIterator ??= this.videoSink.canvases(this.firstTimestamp + this.position);
     this.audioIterator ??= this.audioSink?.buffers(this.firstTimestamp + this.position);
-    this.update(session, { state: 'playing', error: null });
+    this.update(session, { state: 'buffering', error: null });
     void this.videoLoop(token).catch(error => this.decoderFailed(token, error));
     if (this.audioIterator) void this.audioLoop(token).catch(error => this.decoderFailed(token, error));
-    this.ticker = setInterval(() => {
-      if (token !== this.generation) return;
-      this.update(session, { time: this.time() });
-      if (this.videoDone && this.audioDone && this.nodes.size === 0) {
-        this.position = this.currentPosition(); this.playing = false; this.cancelLoops();
-        this.update(session, { state: 'ended', time: this.time() });
-      }
-    }, 200);
+    const render = () => { if (token !== this.generation) return; this.present(token); this.animation = requestAnimationFrame(render); };
+    this.animation = requestAnimationFrame(render);
+    this.ticker = setInterval(() => { if (token === this.generation) { this.present(token); this.update(session, { time: this.time() }); } }, 100);
   }
 
   async pause(): Promise<void> {
-    this.position = this.currentPosition(); this.playing = false; this.cancelLoops();
-    this.decodedEnd = this.position;
+    this.position = this.currentPosition(); this.playing = false; this.running = false; this.cancelLoops();
+    this.decodedEnd = this.position; this.videoEnd = this.audioEnd = this.position;
     this.update(this.snapshot.sessionId, { state: 'paused', time: this.time() });
   }
   async seek(position: number): Promise<void> {
@@ -162,7 +185,7 @@ export class MediabunnyAdapter extends SessionPlayer {
     // The decoded window belongs to the old position: reset it before any
     // snapshot is published, or a backwards seek flashes the stale window all
     // the way to the old position before the real one takes over.
-    this.decodedEnd = this.position;
+    this.decodedEnd = this.position; this.videoEnd = this.audioEnd = this.position;
     this.audioQueue = [];
     const token = this.generation;
     const frame = await this.videoSink?.getCanvas(this.firstTimestamp + this.position);
@@ -170,60 +193,87 @@ export class MediabunnyAdapter extends SessionPlayer {
     if (frame) this.draw(frame);
     this.update(this.snapshot.sessionId, { time: this.time() });
     if (!resume) return;
-    // Resume only after the new offset has decoded data ahead. Without this
-    // gate playback runs a second on the freshly read window, freezes while
-    // the source refills, then recovers — the classic post-seek stutter.
-    this.update(this.snapshot.sessionId, { state: 'buffering' });
-    this.videoIterator = this.videoSink?.canvases(this.firstTimestamp + this.position);
-    this.audioIterator = this.audioSink?.buffers(this.firstTimestamp + this.position);
-    this.audioDecoding = true;
-    const preseekSeconds = 2;
-    const deadline = performance.now() + 2500;
-    while (
-      this.decodedEnd - this.position < preseekSeconds &&
-      performance.now() < deadline &&
-      token === this.generation
-    ) {
-      const iterator = this.audioIterator;
-      if (!iterator) break;
-      const next = await iterator.next();
-      if (next.done) {
-        this.audioDecoding = false;
-        break;
-      }
-      this.enqueueAudio(next.value);
-      // The buffer layer grows visibly while the prebuffer fills instead of
-      // jumping once playback resumes.
-      this.update(this.snapshot.sessionId, { time: this.time() });
-      await delay(5);
-    }
-    if (token !== this.generation) return;
     await this.play();
   }
   async setVolume(level: number): Promise<void> { this.volume = Math.min(1, Math.max(0, Number.isFinite(level) ? level : 1)); if (this.volume > 0) this.muted = false; this.applyVolume(); }
   async setMuted(muted: boolean): Promise<void> { this.muted = muted; this.applyVolume(); }
-  async stop(): Promise<void> { this.invalidateSession(); await this.release(); this.terminal('stopped'); }
+  async stop(): Promise<void> { this.openingGeneration++; this.invalidateSession(); await this.release(); this.terminal('stopped'); }
   async dispose(): Promise<void> { await this.stop(); this.terminal('disposed'); }
-  async selectAudioTrack(): Promise<void> { throw new PlayerOperationError('unsupported-operation', 'Select audio through the playback session.'); }
+  async selectAudioTrack(id: string): Promise<void> {
+    if (!this.videoTrack) return;
+    const source = this.sourceGeneration;
+    const audio = (await this.videoTrack.getPairableAudioTracks()).find(t => trackId('audio', t.id) === id);
+    if (!audio || !await ensureDecodable(audio)) throw new PlayerOperationError('unsupported-format', 'This audio track cannot be decoded.', undefined, 'audio-codec');
+    if (source !== this.sourceGeneration) return;
+    const resume = this.playing; await this.pause();
+    this.audioTrack = audio; this.audioSink = new AudioBufferSink(audio);
+    await this.publishTracks(); if (resume) await this.play();
+  }
+  private async publishTracks(): Promise<void> {
+    if (!this.videoTrack) return;
+    const source = this.sourceGeneration;
+    const choices = await audioChoices(this.videoTrack);
+    if (source !== this.sourceGeneration) return;
+    this.update(this.snapshot.sessionId, { tracks: { audio: choices.choices, text: [], selectedAudioId: this.audioTrack ? trackId('audio', this.audioTrack.id) : null, selectedTextId: null }, qualities: this.videoChoices.choices, selectedQualityId: this.qualityId });
+  }
+  async selectQuality(id: string): Promise<void> {
+    this.qualityId = id; this.update(this.snapshot.sessionId, { selectedQualityId: id });
+    if (id !== 'auto') await this.switchQuality(id);
+  }
+  private async switchQuality(id: string): Promise<void> {
+    const source = this.sourceGeneration;
+    const track = this.videoChoices.tracks.find(t => trackId('video', t.id) === id);
+    if (!track || this.switching) return;
+    this.switching = true; this.lastSwitch = performance.now();
+    try {
+      if (!await ensureDecodable(track)) throw new PlayerOperationError('unsupported-format', 'This rendition cannot be decoded.');
+      const audio = await chooseAudio(track, { ...this.request!, audioTrackId: this.snapshot.tracks.selectedAudioId ?? undefined });
+      if (audio && !await ensureDecodable(audio)) throw new PlayerOperationError('unsupported-format', 'The paired audio cannot be decoded.');
+      const sink = new CanvasSink(track, { poolSize: 4, fit: 'contain' });
+      const frame = await sink.getCanvas(this.firstTimestamp + this.currentPosition());
+      if (source !== this.sourceGeneration) return;
+      if (!frame) return;
+      const resume = this.playing; await this.pause();
+      this.videoTrack = track; this.videoSink = sink; this.audioTrack = audio ?? undefined; this.audioSink = audio ? new AudioBufferSink(audio) : undefined;
+      this.canvas.width = await track.getDisplayWidth(); this.canvas.height = await track.getDisplayHeight();
+      this.draw(frame); await this.publishTracks(); if (resume) await this.play();
+    } finally { this.switching = false; }
+  }
+  async preview(position: number): Promise<Blob | null> {
+    if (!this.videoTrack || this.previewPending || this.snapshot.state === 'buffering') return null;
+    this.previewPending = true; const token = this.sourceGeneration;
+    try {
+      const sink = new CanvasSink(this.videoTrack, { width: 320, height: 180, fit: 'contain', poolSize: 1 });
+      const frame = await sink.getCanvas(this.firstTimestamp + Math.max(0, position - (this.request?.timelineOffsetSeconds ?? 0)));
+      if (!frame || token !== this.sourceGeneration) return null;
+      return 'convertToBlob' in frame.canvas ? frame.canvas.convertToBlob({ type: 'image/webp' }) : new Promise(resolve => (frame.canvas as HTMLCanvasElement).toBlob(resolve, 'image/webp'));
+    } catch { return null; } finally { this.previewPending = false; }
+  }
   async selectTextTrack(): Promise<void> { throw new PlayerOperationError('unsupported-operation', 'Select subtitles through the playback session.'); }
 
   /** Keeps a rolling window fresh so the read cursor can follow its edge. */
   private async refreshLiveWindow(token: number): Promise<void> {
     const track = this.videoTrack;
-    if (!track || token !== this.generation) return;
+    if (!track || token !== this.sourceGeneration) return;
     const interval = await track.getLiveRefreshInterval().catch(() => null);
-    if (token !== this.generation) return;
-    this.liveRefresh = setTimeout(() => {
-      if (token !== this.generation) return;
-      void track.isLive().catch(() => false).then(stillLive => {
-        if (stillLive && token === this.generation) return this.refreshLiveWindow(token);
-        return undefined;
-      });
-    }, Math.max(1, interval ?? 4) * 1000);
+    if (token !== this.sourceGeneration || interval === null) return;
+    if (this.request?.kind === 'live') {
+      const [start, end] = await Promise.all([track.getFirstTimestamp(), track.getDurationFromMetadata({ skipLiveWait: true })]);
+      if (end != null) this.liveWindow = { start: Math.max(0, start - this.firstTimestamp), end: end - this.firstTimestamp, target: Math.max(start, end - interval * (2 + Math.min(2, this.liveStalls))) - this.firstTimestamp };
+      if (token === this.sourceGeneration) this.update(this.snapshot.sessionId, { time: this.time() });
+    }
+    if (token === this.sourceGeneration) this.liveRefresh = setTimeout(() => { void this.refreshLiveWindow(token).catch(e => this.decoderFailed(this.generation, e)); }, Math.max(1, interval) * 1000);
   }
 
   private draw(frame: WrappedCanvas): void { this.canvas.getContext('2d')?.drawImage(frame.canvas, 0, 0, this.canvas.width, this.canvas.height); }
-  private currentPosition(): number { return this.playing && this.context ? Math.max(0, this.context.currentTime - this.anchor) : this.position; }
+  private currentPosition(): number {
+    if (!this.running || !this.context) return this.position;
+    const output = this.context.getOutputTimestamp?.();
+    const audibleClock = output?.performanceTime && output.contextTime !== undefined
+      ? output.contextTime + Math.max(0, performance.now() - output.performanceTime) / 1000
+      : this.context.currentTime - (this.context.baseLatency || 0);
+    return Math.max(this.position, audibleClock - this.anchor);
+  }
   private time() {
     const offset = this.request?.timelineOffsetSeconds ?? 0;
     const engine = this.duration == null ? null : this.duration + offset;
@@ -234,12 +284,12 @@ export class MediabunnyAdapter extends SessionPlayer {
     const position = this.currentPosition() + offset;
     // The decoded-ahead window is real evidence for the UI buffer layer; live
     // windows and stalls at the playhead report no lead at all.
-    const ahead = this.live || this.decodedEnd <= this.currentPosition()
+    const ahead = this.decodedEnd <= this.currentPosition()
       ? null
       : Math.min(this.decodedEnd + offset, total ?? Number.POSITIVE_INFINITY);
     // An absent key (not null) keeps snapshots deep-equal clean for consumers
     // that never opted into the buffer signal.
-    return { positionSeconds: position, durationSeconds: total, bufferedEndSeconds: ahead ?? undefined };
+    return { positionSeconds: position, durationSeconds: total, ...(ahead != null ? { bufferedEndSeconds: ahead, bufferedRanges: [{ start: position, end: ahead }] } : {}), ...(this.request?.kind === 'live' && this.liveWindow ? { liveWindow: this.liveWindow, seekable: false } : {}) };
   }
   private applyVolume(): void {
     if (this.gain) this.gain.gain.value = this.muted ? 0 : this.volume;
@@ -247,79 +297,103 @@ export class MediabunnyAdapter extends SessionPlayer {
   }
   private async videoLoop(token: number): Promise<void> {
     const iterator = this.videoIterator!;
-    for await (const frame of iterator) {
-      if (token !== this.generation) return;
-      while (frame.timestamp - this.firstTimestamp > this.currentPosition() && token === this.generation)
-        await delay(8);
-      if (token !== this.generation) return;
-      this.draw(frame);
-
-      this.decodedEnd = Math.max(this.decodedEnd, frame.timestamp - this.firstTimestamp);
-    }
-    if (token === this.generation) this.videoDone = true;
-  }
-  /** Queue an audio packet and grow the decoded-ahead window it proves. */
-  private enqueueAudio(packet: WrappedAudioBuffer): void {
-    this.audioQueue.push(packet);
-    this.decodedEnd = Math.max(this.decodedEnd, packet.timestamp - this.firstTimestamp + packet.buffer.duration);
-  }
-
-  private async audioLoop(token: number): Promise<void> {
-    // The producer decodes ahead of the clock so the source read cursor
-    // outruns playback: the decoded window is the UI buffer signal and the
-    // prebuffer a seek waits on.
-    void (async () => {
-      const iterator = this.audioIterator;
-      if (!iterator) return;
-      this.audioDecoding = true;
-      try {
-        for await (const packet of iterator) {
-          if (token !== this.generation) return;
-          this.enqueueAudio(packet);
-          while (this.audioQueue.length > this.audioQueueLimit && token === this.generation)
-            await delay(50);
-        }
-      } catch { /* Read failures surface as queue exhaustion. */ }
-      if (token === this.generation) this.audioDecoding = false;
-    })();
     while (token === this.generation) {
-      const packet = this.audioQueue[0];
-      if (!packet) {
-        if (!this.audioDecoding) break;
-        await delay(20);
-        continue;
-      }
-      const relative = packet.timestamp - this.firstTimestamp;
-      while (relative - this.currentPosition() > 0.5 && token === this.generation) await delay(20);
-      if (token !== this.generation || !this.context || !this.gain) return;
-      this.audioQueue.shift();
-      const offset = Math.max(0, this.currentPosition() - relative);
-      if (offset >= packet.buffer.duration) continue;
-      const node = this.context.createBufferSource(); node.buffer = packet.buffer; node.connect(this.gain);
-      this.nodes.add(node); node.onended = () => { this.nodes.delete(node); node.disconnect(); };
-      node.start(Math.max(this.context.currentTime, this.anchor + relative), offset);
+      while (this.frames.length >= 3 && token === this.generation) await delay(8);
+      if (token !== this.generation) return;
+      const next = await iterator.next(); if (token !== this.generation) return;
+      if (next.done) { this.videoDone = true; return; }
+      this.frames.push(next.value); this.videoEnd = Math.max(this.videoEnd, next.value.timestamp - this.firstTimestamp + next.value.duration);
     }
-    if (token === this.generation) this.audioDone = true;
   }
-  private decoderFailed(token: number, _cause: unknown): void {
+  private async audioLoop(token: number): Promise<void> {
+    const iterator = this.audioIterator!;
+    while (token === this.generation) {
+      while ((this.audioQueue.length >= this.audioQueueLimit || this.audioEnd - this.currentPosition() > 2) && token === this.generation) await delay(20);
+      if (token !== this.generation) return;
+      const next = await iterator.next(); if (token !== this.generation) return;
+      if (next.done) { this.audioDone = true; return; }
+      this.audioQueue.push(next.value); this.audioEnd = Math.max(this.audioEnd, next.value.timestamp - this.firstTimestamp + next.value.buffer.duration);
+    }
+  }
+  private present(token: number): void {
+    if (!this.playing || !this.context || token !== this.generation) return;
+    let position = this.currentPosition();
+    if (!this.running && (this.videoDone || this.frames.length > 0) && (this.audioDone || this.audioEnd > position + 0.08)) {
+      this.anchor = this.context.currentTime - this.position; this.running = true; position = this.position;
+      this.update(this.snapshot.sessionId, { state: 'playing', error: null });
+    }
+    if (this.running && ((!this.videoDone && !this.frames.length && this.videoEnd < position) || (!this.audioDone && this.audioEnd < position + 0.015))) {
+      this.position = position; this.running = false; this.stopNodes(); this.liveStalls++; this.bufferingSince = performance.now(); this.update(this.snapshot.sessionId, { state: 'buffering' });
+    }
+    this.decodedEnd = this.audioSink ? Math.min(this.videoEnd, this.audioEnd) : this.videoEnd;
+    if (!this.running) {
+      if (this.request?.kind === 'live' && performance.now() - this.bufferingSince > 15000) {
+        if (this.lastLiveReconnect && performance.now() - this.lastLiveReconnect < 60000) {
+          this.decoderFailed(token, new PlayerOperationError('connection-failed', 'The live stream is not advancing.', undefined, 'network'));
+        } else {
+          this.lastLiveReconnect = performance.now();
+          const opening = this.openingGeneration + 1;
+          void this.open({ ...this.request, startAtSeconds: 0, paused: false }).catch(cause => {
+            if (opening === this.openingGeneration) this.fail(this.snapshot.sessionId, mediaFailure(cause).toFailure());
+          });
+        }
+      }
+      return;
+    }
+    let frame: WrappedCanvas | undefined;
+    while (this.frames.length && this.frames[0].timestamp - this.firstTimestamp <= position + 0.004) { if (frame) this.dropped++; frame = this.frames.shift(); }
+    if (frame) {
+      this.draw(frame); this.presented++;
+      if (this.snapshot.diagnostics) this.update(this.snapshot.sessionId, { diagnostics: { ...this.snapshot.diagnostics, estimatedAvSkewMs: Math.abs(position - (frame.timestamp - this.firstTimestamp)) * 1000 } });
+    }
+    while (this.audioQueue.length && this.audioQueue[0].timestamp - this.firstTimestamp + this.audioQueue[0].buffer.duration <= position) this.scheduled.delete(this.audioQueue.shift()!);
+    for (const packet of this.audioQueue) {
+      const relative = packet.timestamp - this.firstTimestamp;
+      if (relative > position + 0.35) break;
+      if (this.scheduled.has(packet) || !this.gain) continue;
+      const offset = Math.max(0, position - relative); if (offset >= packet.buffer.duration) continue;
+      const node = this.context.createBufferSource(); node.buffer = packet.buffer; node.connect(this.gain); this.nodes.add(node); this.scheduled.add(packet);
+      node.onended = () => { this.nodes.delete(node); node.disconnect(); };
+      const timestamp = Math.round((this.anchor + relative) * this.context.sampleRate) / this.context.sampleRate;
+      node.start(Math.max(this.context.currentTime, timestamp), offset);
+    }
+    if (this.videoDone && this.audioDone && !this.frames.length && !this.nodes.size && position >= Math.max(this.videoEnd, this.audioEnd)) {
+      this.position = position; this.playing = false; this.running = false; this.cancelLoops(); this.update(this.snapshot.sessionId, { state: 'ended', time: this.time() }); return;
+    }
+    if (this.snapshot.diagnostics) this.update(this.snapshot.sessionId, { diagnostics: { ...this.snapshot.diagnostics, presentedFrames: this.presented, droppedFrames: this.dropped } });
+    if (performance.now() - this.performanceStart > 10000 && this.presented > 240 && this.dropped / (this.presented + this.dropped) > 0.05) {
+      this.decoderFailed(token, new PlayerOperationError('performance-limited', 'This playback path cannot sustain the frame rate.', undefined, 'performance')); return;
+    }
+    if (this.qualityId === 'auto' && this.videoTrack && !this.switching && performance.now() - this.lastSwitch > 5000) {
+      const id = trackId('video', this.videoTrack.id);
+      const choice = this.adaptive.choose(this.videoChoices.choices, id, this.decodedEnd - position, performance.now());
+      if (choice !== id) void this.switchQuality(choice).catch(() => undefined);
+    }
+  }
+  private stopNodes(): void {
+    for (const node of this.nodes) { node.onended = null; try { node.stop(); } catch {} node.disconnect(); }
+    this.nodes.clear(); this.scheduled.clear();
+  }
+  private decoderFailed(token: number, cause: unknown): void {
     if (token !== this.generation) return;
-    this.position = this.currentPosition(); this.playing = false; this.cancelLoops();
+    this.position = this.currentPosition(); this.playing = false; this.running = false; this.cancelLoops();
     this.update(this.snapshot.sessionId, { time: this.time() });
-    this.fail(this.snapshot.sessionId, { code: 'unsupported-format', message: 'Mediabunny could not continue decoding the selected source.' });
+    this.fail(this.snapshot.sessionId, mediaFailure(cause, 'video-codec').toFailure());
   }
   private cancelLoops(): void {
     this.generation++;
     clearInterval(this.ticker); this.ticker = undefined;
-    clearTimeout(this.liveRefresh); this.liveRefresh = undefined;
+    if (this.animation !== undefined) cancelAnimationFrame(this.animation); this.animation = undefined; this.frames = [];
     // return() may wait for a live read; disposal below aborts the source on stop.
     void this.videoIterator?.return().catch(() => undefined);
     void this.audioIterator?.return().catch(() => undefined);
-    this.videoIterator = undefined; this.audioIterator = undefined; this.audioQueue = []; this.audioDecoding = false;
+    this.videoIterator = undefined; this.audioIterator = undefined; this.audioQueue = [];
     for (const node of this.nodes) { node.onended = null; try { node.stop(); } catch { /* already ended */ } node.disconnect(); }
-    this.nodes.clear();
+    this.nodes.clear(); this.scheduled.clear();
   }
   private async release(): Promise<void> {
-    this.playing = false; this.cancelLoops(); this.input?.dispose(); this.input = undefined;
+    this.sourceGeneration++; clearTimeout(this.liveRefresh); this.liveRefresh = undefined; this.liveWindow = undefined;
+    this.playing = false; this.running = false; this.cancelLoops(); this.input?.dispose(); this.input = undefined;
     this.videoSink = undefined; this.videoTrack = undefined; this.audioSink = undefined;
     const context = this.context; this.context = undefined; this.gain = undefined;
     if (context && context.state !== 'closed') await context.close();
@@ -342,7 +416,7 @@ async function loadCodecExtension(codec: string): Promise<void> {
       if (name === 'ac3') { const { registerAc3Decoder } = await import('@mediabunny/ac3'); registerAc3Decoder(); }
       else if (name === 'dts') { const { registerDtsDecoder } = await import('@mediabunny/dts'); registerDtsDecoder(); }
       else { const { registerProresDecoder } = await import('@mediabunny/prores'); registerProresDecoder(); }
-    })().catch(() => undefined);
+    })().catch(cause => { loadedExtensions.delete(name); throw cause; });
     loadedExtensions.set(name, pending);
   }
   return pending;
@@ -367,5 +441,5 @@ export async function decodableCodecs(): Promise<{ video: string[]; audio: strin
   ]);
   // The extension decoders ship with this bundle, so Dolby and DTS are decodable
   // on demand even where the browser itself cannot.
-  return { video: [...video, 'prores'], audio: [...new Set([...audio, 'ac3', 'eac3', 'dts'])] };
+  return { video, audio };
 }

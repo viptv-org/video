@@ -69,6 +69,10 @@ export abstract class SessionPlayer implements Player {
     time?: PlayerTime;
     tracks?: PlayerTracks;
     error?: PlayerFailure | null;
+    qualities?: PlayerSnapshot['qualities'];
+    selectedQualityId?: string;
+    metadata?: PlayerSnapshot['metadata'];
+    captions?: PlayerSnapshot['captions'];
   }): void {
     if (!this.isCurrent(sessionId)) return;
     this.publish({ ...this.currentSnapshot, ...patch });

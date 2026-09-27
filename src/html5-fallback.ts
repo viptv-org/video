@@ -1,18 +1,20 @@
 import { VizioHtml5Adapter, VIZIO_HTML5_CAPABILITIES, type HtmlMediaLike } from './vizio-html5';
 import { IDLE_SNAPSHOT, PlayerOperationError, type OpenPlayerRequest, type Player, type PlayerCapabilities, type PlayerListener, type PlayerSnapshot } from './types';
+import { browserPlaybackPolicy, canChangeMediaPath, mediaFailure } from './browser-policy';
+import { BrowserCaptions } from './captions';
 
 /** WebCodecs availability is a gate, never proof that the selected track decodes. */
 export function mediabunnyUnavailable(canvas?: HTMLCanvasElement): string | undefined {
   if (!canvas) return 'A MediaBunny drawing surface is unavailable.';
   if (!globalThis.isSecureContext) return 'WebCodecs requires HTTPS or a trusted local context.';
-  if (typeof BigInt === 'undefined' || typeof VideoDecoder === 'undefined' || typeof AudioDecoder === 'undefined' || typeof AudioContext === 'undefined')
+  if (typeof BigInt === 'undefined' || typeof VideoDecoder === 'undefined' || typeof AudioContext === 'undefined')
     return 'This runtime does not expose the required WebCodecs and Web Audio APIs.';
   return undefined;
 }
 
 /** Prefer real decoded samples; failure retains the exact delivery URL and backend lease. */
 export class Html5FallbackAdapter implements Player {
-  readonly capabilities: PlayerCapabilities = { ...VIZIO_HTML5_CAPABILITIES, platform: 'html5', engine: 'Mediabunny preferred; native/HLS.js fallback', canSetVolume: true, limitations: ['Mediabunny requires supported WebCodecs tracks and a secure context.', 'The active engine and any local fallback are reported per playback session.'] };
+  get capabilities(): PlayerCapabilities { return { ...(this.active?.capabilities ?? VIZIO_HTML5_CAPABILITIES), platform: this.platform, canSetVolume: true, ...(this.captions ? { canSelectTextTrack: true, canDisableTextTrack: true } : {}) }; }
   private active?: Player;
   private unsubscribe?: () => void;
   private listeners = new Set<PlayerListener>();
@@ -26,7 +28,12 @@ export class Html5FallbackAdapter implements Player {
   private muted = false;
   private pausedIntent = false;
   private cancelOpening?: () => void;
-  constructor(private readonly media: HtmlMediaLike, private readonly canvas?: HTMLCanvasElement) {}
+  private paths: Array<'bunny' | 'native' | 'mse'> = [];
+  private captions?: BrowserCaptions;
+  private captionTracks: PlayerSnapshot['tracks']['text'] = [];
+  private captionId: string | null = null;
+  private captionText: readonly string[] = [];
+  constructor(private readonly media: HtmlMediaLike, private readonly canvas?: HTMLCanvasElement, private readonly platform: 'html5' | 'vizio' = 'html5') {}
   get snapshot(): PlayerSnapshot { return this.value; }
   subscribe(listener: PlayerListener): () => void { this.listeners.add(listener); listener(this.value); return () => this.listeners.delete(listener); }
 
@@ -37,28 +44,40 @@ export class Html5FallbackAdapter implements Player {
     const previous = this.active; this.active = undefined; await previous?.dispose();
     if (generation !== this.generation) return;
     this.pausedIntent = request.paused ?? false;
+    this.captions?.dispose(); this.captions = undefined; this.captionTracks = []; this.captionText = []; this.captionId = null;
+    if (browserPlaybackPolicy().clientInspection && request.deliveryMode === 'direct') this.captions = new BrowserCaptions(request.url, (tracks, selected, captions) => {
+      this.captionTracks = tracks; this.captionId = selected; this.captionText = captions;
+    });
     this.request = request; this.opening = true; this.recovering = false; this.fallbackReason = undefined;
     this.publish({ ...IDLE_SNAPSHOT, sessionId: generation, kind: request.kind, state: 'opening' });
     const unavailable = mediabunnyUnavailable(this.canvas);
+    this.paths = unavailable ? ['native'] : ['bunny', 'native'];
+    if (request.deliveryFormat === 'fmp4') this.paths = ['native'];
+    if (browserPlaybackPolicy().localRemux && typeof MediaSource !== 'undefined' && this.media instanceof HTMLVideoElement) this.paths.push('mse');
+    this.fallbackReason = unavailable;
     try {
-      if (unavailable) { this.fallbackReason = unavailable; await this.native(request, generation); return; }
-      const { MediabunnyAdapter } = await import('./mediabunny');
-      if (generation !== this.generation) return;
-      const player = new MediabunnyAdapter(this.canvas!);
-      this.attach(player, generation, true);
-      try { await withTimeout(Promise.race([player.open(request), new Promise<void>(resolve => { this.cancelOpening = resolve; })]), 15000); }
-      catch {
-        if (generation !== this.generation) return;
-        this.fallbackReason = 'Mediabunny could not prepare this source; using the compatible HTML playback path.';
-        this.clearSubscription(); await player.dispose();
-        await this.native(request, generation);
-      }
+      await this.nextPath(request, generation);
     } finally { if (generation === this.generation) { this.opening = false; this.cancelOpening = undefined; } }
   }
-  private async native(request: OpenPlayerRequest, generation: number): Promise<void> {
-    if (generation !== this.generation) return;
-    const player = new VizioHtml5Adapter(this.media); this.attach(player, generation, false);
-    await player.open(request);
+  private async nextPath(request: OpenPlayerRequest, generation: number): Promise<void> {
+    while (this.paths.length && generation === this.generation) {
+      const path = this.paths.shift()!;
+      const player: Player = path === 'bunny' ? new (await import('./mediabunny')).MediabunnyAdapter(this.canvas!)
+        : path === 'mse' ? new (await import('./mediabunny-mse')).MediabunnyMseAdapter(this.media as HTMLVideoElement)
+        : new VizioHtml5Adapter(this.media);
+      if (generation !== this.generation) { await player.dispose(); return; }
+      this.attach(player, generation, path === 'bunny');
+      try {
+        await withTimeout(Promise.race([player.open(request), new Promise<void>(resolve => { this.cancelOpening = resolve; })]), 15000);
+        return;
+      } catch (cause) {
+        if (generation !== this.generation) return;
+        const error = mediaFailure(cause);
+        this.clearSubscription(); await player.dispose();
+        if (!canChangeMediaPath(error) || !this.paths.length) throw error;
+        this.fallbackReason = `${path} could not present these tracks; trying the next local playback path.`;
+      }
+    }
   }
   private attach(player: Player, generation: number, bunny: boolean): void {
     this.clearSubscription(); this.active = player;
@@ -66,21 +85,22 @@ export class Html5FallbackAdapter implements Player {
     void player.setVolume?.(this.volume); void player.setMuted?.(this.muted);
     this.unsubscribe = player.subscribe(snapshot => {
       if (generation !== this.generation || this.active !== player) return;
-      if (bunny && snapshot.state === 'error' && !this.opening && !this.recovering) {
+      if (snapshot.state === 'error' && snapshot.error && canChangeMediaPath(snapshot.error) && this.paths.length && !this.opening && !this.recovering) {
         void this.recover(generation, snapshot); return;
       }
       if (snapshot.state === 'idle') return;
-      this.publish({ ...snapshot, sessionId: generation, diagnostics: snapshot.diagnostics ? { ...snapshot.diagnostics, ...(this.fallbackReason ? { fallbackReason: this.fallbackReason } : {}) } : undefined });
+      this.captions?.tick(snapshot.time.positionSeconds);
+      this.publish({ ...snapshot, sessionId: generation, ...(this.captionTracks.length ? { tracks: { ...snapshot.tracks, text: this.captionTracks, selectedTextId: this.captionId }, captions: this.captionText } : {}), diagnostics: snapshot.diagnostics ? { ...snapshot.diagnostics, ...(this.fallbackReason ? { fallbackReason: this.fallbackReason } : {}) } : undefined });
     });
   }
   private async recover(generation: number, snapshot: PlayerSnapshot): Promise<void> {
     if (!this.request || generation !== this.generation) return;
     this.recovering = true;
-    const request = { ...this.request, startAtSeconds: Math.max(0, snapshot.time.positionSeconds - (this.request.timelineOffsetSeconds ?? 0)), paused: this.pausedIntent };
+    const request = { ...this.request, audioTrackId: snapshot.tracks.selectedAudioId ?? undefined, textTrackId: snapshot.tracks.selectedTextId, qualityId: snapshot.selectedQualityId, startAtSeconds: Math.max(0, snapshot.time.positionSeconds - (this.request.timelineOffsetSeconds ?? 0)), paused: this.pausedIntent };
     this.fallbackReason = 'Mediabunny decoding stopped; continuing the same session with HTML playback.';
     this.publish({ ...snapshot, sessionId: generation, state: 'buffering', error: null });
     this.clearSubscription(); await this.active?.dispose();
-    try { await this.native(request, generation); }
+    try { await this.nextPath(request, generation); }
     catch (error) {
       if (generation === this.generation) this.publish({ ...this.value, state: 'error', error: error instanceof PlayerOperationError ? error.toFailure() : { code: 'prepare-failed', message: 'The selected source could not be played.' } });
     } finally { if (generation === this.generation) this.recovering = false; }
@@ -91,8 +111,12 @@ export class Html5FallbackAdapter implements Player {
   async setVolume(level: number): Promise<void> { this.volume = Math.min(1, Math.max(0, Number.isFinite(level) ? level : 1)); if (this.volume > 0) this.muted = false; await this.active?.setVolume?.(this.volume); }
   async setMuted(muted: boolean): Promise<void> { this.muted = muted; await this.active?.setMuted?.(muted); }
   async selectAudioTrack(id: string): Promise<void> { await this.requireActive().selectAudioTrack(id); }
-  async selectTextTrack(id: string | null): Promise<void> { await this.requireActive().selectTextTrack(id); }
+  async loadTextTracks(): Promise<void> { await this.captions?.discover(); this.publish({ ...this.value, tracks: { ...this.value.tracks, text: this.captionTracks, selectedTextId: this.captionId }, captions: this.captionText }); }
+  async selectTextTrack(id: string | null): Promise<void> { if (this.captions) { await this.captions.select(id, this.value.time.positionSeconds); this.publish({ ...this.value, tracks: { ...this.value.tracks, text: this.captionTracks, selectedTextId: id }, captions: [] }); } else await this.requireActive().selectTextTrack(id); }
+  async selectQuality(id: string): Promise<void> { await this.requireActive().selectQuality?.(id); }
+  async preview(position: number): Promise<Blob | null> { return await this.requireActive().preview?.(position) ?? null; }
   async stop(): Promise<void> {
+    this.captions?.dispose(); this.captions = undefined;
     const generation = ++this.generation; this.cancelOpening?.(); this.cancelOpening = undefined; this.clearSubscription(); this.unsubscribe = undefined;
     const player = this.active; this.active = undefined; await player?.dispose();
     if (generation === this.generation) { this.showCanvas(false); this.publish({ ...IDLE_SNAPSHOT, sessionId: generation, state: 'stopped' }); }
@@ -108,6 +132,6 @@ export class Html5FallbackAdapter implements Player {
 }
 async function withTimeout<T>(operation: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  try { return await Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Decoder preparation timed out')), ms); })]); }
+  try { return await Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new PlayerOperationError('connection-failed', 'Media preparation timed out.', undefined, 'network')), ms); })]); }
   finally { clearTimeout(timer); }
 }

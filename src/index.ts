@@ -4,6 +4,7 @@ import { TauriNativeAdapter, resolveTauriVideoInvoker, type NativeVideoEngine } 
 import type { HtmlMediaLike } from './vizio-html5';
 import { VizioHtml5Adapter } from './vizio-html5';
 import type { Player, PlayerPlatform } from './types';
+import { browserPlaybackPolicy } from './browser-policy';
 
 export * from './types';
 export * from './session';
@@ -28,7 +29,9 @@ export function createPlayer(options: CreatePlayerOptions): Player {
     case 'tizen':
       return new TizenAvplayAdapter(options.avplay);
     case 'vizio':
-      return new VizioHtml5Adapter(requireVideo(options.video));
+      return browserPlaybackPolicy().localRemux
+        ? new Html5FallbackAdapter(requireVideo(options.video), undefined, 'vizio')
+        : new VizioHtml5Adapter(requireVideo(options.video));
     case 'html5':
       return new Html5FallbackAdapter(requireVideo(options.video), options.canvas);
     case 'tauri': {
@@ -49,3 +52,4 @@ function requireVideo(video: HtmlMediaLike | undefined): HtmlMediaLike {
 }
 
 export * from './browser-capabilities';
+export * from './browser-policy';

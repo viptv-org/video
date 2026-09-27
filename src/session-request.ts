@@ -1,3 +1,4 @@
+import { canChangeMediaPath } from './browser-policy';
 import type {
   PlaybackBackendError,
   PlaybackCapabilities,
@@ -19,6 +20,9 @@ export function adapterRequest(session: PlaybackSessionView, kind: PlaybackKind,
   const direct = session.mode === 'direct';
   const deliveryStart = direct ? 0 : Math.max(0, session.position);
   return {
+    preferredAudioLanguage: session.preferredAudioLanguage,
+    preferredSubtitleLanguage: session.preferredSubtitleLanguage,
+    maximumHeight: session.maximumHeight,
     url: session.url,
     kind,
     startAtSeconds: direct ? position : Math.max(0, position - deliveryStart),
@@ -56,12 +60,12 @@ function refusalStatus(error: unknown): number | undefined {
 /**
  * A delivery refusal is answered with the next delivery rung for the same
  * source: original delivery, then managed output, then a forced transcode.
- * Only a network failure (0) or the server's delivery refusal (406) escalates;
+ * Only a server delivery refusal (406) escalates; network failures never encode media.
  * validation (400) and every other answer keeps its own meaning.
  */
 export function escalatePreparation(request: PlaybackStart, error: unknown): PlaybackStart | undefined {
   const status = refusalStatus(error);
-  if (status !== 0 && status !== 406) return undefined;
+  if (status !== 406) return undefined;
   if (!request.managedOnly) return { ...request, managedOnly: true };
   if (!request.forceTranscode) return { ...request, managedOnly: true, forceTranscode: true };
   return undefined;
@@ -73,7 +77,7 @@ export function recoveryRequest(
   request: PlaybackStart,
   code: PlayerFailure['code'],
 ): PlaybackStart | undefined {
-  if (code !== 'unsupported-format') return undefined;
+  if (!canChangeMediaPath({ code })) return undefined;
   if (session.mode === 'direct' && !request.managedOnly)
     return { ...request, managedOnly: true };
   if (session.mode !== 'direct' && !request.forceTranscode)

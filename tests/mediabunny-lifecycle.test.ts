@@ -5,7 +5,9 @@ vi.mock('mediabunny', () => ({
   ALL_FORMATS: [], UrlSource: class {},
   Input: class {
     dispose = state.dispose;
-    async getPrimaryVideoTrack() { return { canDecode: async () => true, getPrimaryPairableAudioTrack: async () => null, getDecoderConfig: async () => ({ codec: 'avc1.640029' }), getDisplayWidth: async () => 1920, getDisplayHeight: async () => 1080, getFirstTimestamp: async () => 1.4, isLive: async () => state.live, getDurationFromMetadata: state.duration }; }
+    async getMetadataTags() { return {}; }
+    async getVideoTracks() { return [await this.getPrimaryVideoTrack()]; }
+    async getPrimaryVideoTrack() { return { id: 1, number: 1, getName: async () => '', getLanguageCode: async () => 'und', getPairableAudioTracks: async () => [], getAverageBitrate: async () => 1000000, getBitrate: async () => 1000000, hasOnlyKeyPackets: async () => false, hasHighDynamicRange: async () => false, getLiveRefreshInterval: async () => null, canDecode: async () => true, getPrimaryPairableAudioTrack: async () => null, getDecoderConfig: async () => ({ codec: 'avc1.640029' }), getDisplayWidth: async () => 1920, getDisplayHeight: async () => 1080, getFirstTimestamp: async () => 1.4, isLive: async () => state.live, getDurationFromMetadata: state.duration }; }
   },
   CanvasSink: class { async getCanvas() { return { canvas: document.createElement('canvas'), timestamp: 1.4, duration: 0.04 }; } },
   AudioBufferSink: class {},

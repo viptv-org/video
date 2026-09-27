@@ -1,6 +1,7 @@
 import { probeBrowserPlaybackCapabilities } from './browser-capabilities';
 import { TAURI_NATIVE_DELIVERY_CAPABILITIES } from './tauri-native';
 import type { PlaybackCapabilities, PlayerPlatform } from './types';
+import { browserPlaybackPolicy } from './browser-policy';
 
 /**
  * Delivery capability profiles for each platform entry point
@@ -72,7 +73,7 @@ export function webDeliveryCapabilities(): Promise<PlaybackCapabilities> {
     },
   ));
   return report.then((probe) => {
-    if (!probe.canPlayManagedHls) {
+    if (!probe.canPlayManagedHls && !probe.capabilities.browser?.inspectOriginal) {
       throw new Error(
         'This browser cannot play the supported H.264/AAC streaming output. Use a supported browser or TV player.',
       );
@@ -93,7 +94,9 @@ export function deliveryCapabilitiesFor(
     case 'tizen':
       return async () => TIZEN_DELIVERY_CAPABILITIES;
     case 'vizio':
-      return async () => VIZIO_DELIVERY_CAPABILITIES;
+      return async () => browserPlaybackPolicy().clientInspection || browserPlaybackPolicy().localRemux
+        ? (await probeBrowserPlaybackCapabilities(undefined, { mediabunny: false })).capabilities
+        : VIZIO_DELIVERY_CAPABILITIES;
     case 'tauri':
       return async () => TAURI_NATIVE_DELIVERY_CAPABILITIES;
     case 'html5':
