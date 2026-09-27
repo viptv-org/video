@@ -145,13 +145,24 @@ export class MediabunnyAdapter extends SessionPlayer {
     }).catch(() => undefined);
     this.update(session, { state: 'ready', diagnostics: { firstFrameMs: performance.now() - openedAt, decision: request.deliveryMode === 'managed' ? 'server-remux' : 'original', engine: 'mediabunny', networkTransport: '__TAURI_INTERNALS__' in window ? 'native-http' : new URL(request.url, location.href).pathname.startsWith('/media/') ? 'browser-proxy' : 'direct', transport: /\.m3u8(?:[?#]|$)/i.test(request.url) ? 'hls' : 'file', videoCodec: videoConfig?.codec, audioCodec: audioConfig?.codec, width, height }, volume: { level: this.volume, muted: this.muted }, time: this.time() });
     if (request.paused) this.update(session, { state: 'paused' });
-    else await this.play();
+    else {
+      try { await this.play(); }
+      catch (cause) {
+        if (!(cause instanceof PlayerOperationError) || cause.code !== 'autoplay-blocked') throw cause;
+        this.update(session, { state: 'paused', diagnostics: { ...this.snapshot.diagnostics!, fallbackReason: 'Select Play to enable browser audio.' } });
+      }
+    }
   }
 
   async play(): Promise<void> {
     if (this.playing) return;
     if (!this.context || !this.videoSink) throw new PlayerOperationError('invalid-state', 'No prepared MediaBunny session.');
-    await this.context.resume();
+    let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([this.context.resume(), new Promise<never>((_, reject) => {
+        resumeTimer = setTimeout(() => reject(new PlayerOperationError('autoplay-blocked', 'Select Play to enable browser audio.', undefined, 'autoplay')), 1500);
+      })]);
+    } finally { clearTimeout(resumeTimer); }
     if (this.context.state !== 'running') throw new PlayerOperationError('autoplay-blocked', 'Select Play to enable browser audio.', undefined, 'autoplay');
     this.playing = true; this.running = false;
     this.bufferingSince = performance.now();
@@ -265,7 +276,12 @@ export class MediabunnyAdapter extends SessionPlayer {
     if (token === this.sourceGeneration) this.liveRefresh = setTimeout(() => { void this.refreshLiveWindow(token).catch(e => this.decoderFailed(this.generation, e)); }, Math.max(1, interval) * 1000);
   }
 
-  private draw(frame: WrappedCanvas): void { this.canvas.getContext('2d')?.drawImage(frame.canvas, 0, 0, this.canvas.width, this.canvas.height); }
+  private draw(frame: WrappedCanvas): void {
+    const context = this.canvas.getContext('2d');
+    if (!context) throw new PlayerOperationError('unsupported-format', 'The video drawing surface is unavailable.', undefined, 'rendering');
+    context.drawImage(frame.canvas, 0, 0, this.canvas.width, this.canvas.height);
+    if (this.snapshot.diagnostics) this.update(this.snapshot.sessionId, { diagnostics: { ...this.snapshot.diagnostics, presentedPositionSeconds: frame.timestamp - this.firstTimestamp + (this.request?.timelineOffsetSeconds ?? 0) } });
+  }
   private currentPosition(): number {
     if (!this.running || !this.context) return this.position;
     const output = this.context.getOutputTimestamp?.();

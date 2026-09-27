@@ -128,6 +128,7 @@ export interface PlayerDiagnostics {
   readonly droppedFrames?: number;
   readonly presentedFrames?: number;
   readonly estimatedAvSkewMs?: number;
+  readonly presentedPositionSeconds?: number;
 }
 
 export interface PlayerSnapshot {

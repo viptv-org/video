@@ -11,6 +11,11 @@ let unsubscribe: (() => void) | undefined;
 const events: Array<{ at: number; state: string; position: number }> = [];
 const started = performance.now();
 let lastState = '';
+let presentedTime: number | undefined;
+if (video.requestVideoFrameCallback) {
+  const frame = (_: number, metadata: VideoFrameCallbackMetadata) => { presentedTime = metadata.mediaTime; video.requestVideoFrameCallback(frame); };
+  video.requestVideoFrameCallback(frame);
+}
 const api = {
   get snapshot() { return snapshot; }, get events() { return events; },
   async open(file = 'h264-aac.mkv', engine = 'mse', position = 0, kind: 'vod' | 'live' = 'vod') {
@@ -30,6 +35,8 @@ const api = {
   async seek(position: number) { await player!.seek(position); },
   async audio(id: string) { await player!.selectAudioTrack(id); },
   async quality(id: string) { await player!.selectQuality?.(id); },
+  presentation() { return snapshot?.diagnostics?.engine === 'mediabunny' ? snapshot.diagnostics.presentedPositionSeconds
+    : presentedTime === undefined ? undefined : presentedTime + (snapshot?.time.positionSeconds ?? 0) - video.currentTime; },
   async pause() { await player!.pause(); }, async play() { await player!.play(); }, async stop() { await player!.stop(); },
   async dispose() { await player?.dispose(); unsubscribe?.(); },
 };

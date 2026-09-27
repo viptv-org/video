@@ -21,6 +21,7 @@ export interface HtmlTextTrack {
 }
 
 export interface HtmlMediaLike {
+  readonly audioTracks?: ArrayLike<{ label: string; language: string; enabled: boolean }>;
   src: string;
   volume?: number;
   muted?: boolean;
@@ -69,7 +70,7 @@ export const VIZIO_HTML5_CAPABILITIES: PlayerCapabilities = {
  * handed to the adapter and records the selected rung.
  */
 export class VizioHtml5Adapter extends SessionPlayer {
-  get capabilities(): PlayerCapabilities { return { ...VIZIO_HTML5_CAPABILITIES, canSelectAudioTrack: !!this.hls }; }
+  get capabilities(): PlayerCapabilities { return { ...VIZIO_HTML5_CAPABILITIES, canSelectAudioTrack: !!this.hls || !!this.media.audioTracks?.length }; }
   private readonly handlers: Record<string, () => void>;
   private hls: Hls | null = null;
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
@@ -327,6 +328,13 @@ export class VizioHtml5Adapter extends SessionPlayer {
   }
 
   async selectAudioTrack(id: string): Promise<void> {
+    if (!this.hls) {
+      const index = /^audio:(\d+)$/.exec(id)?.[1];
+      const tracks = Array.from(this.media.audioTracks ?? []);
+      if (index === undefined || !tracks[Number(index)]) throw new PlayerOperationError('unsupported-operation', 'This audio track is unavailable.');
+      tracks.forEach((track, at) => { track.enabled = at === Number(index); });
+      this.update(this.snapshot.sessionId, { tracks: this.tracks() }); return;
+    }
     const index = /^hls-audio:(\d+)$/.exec(id)?.[1];
     if (!this.hls || index === undefined || !this.hls.audioTracks[Number(index)]) throw new PlayerOperationError('unsupported-operation', 'This audio track is unavailable.');
     this.hls.audioTrack = Number(index); this.update(this.snapshot.sessionId, { tracks: this.tracks() });
@@ -468,7 +476,9 @@ function tracksFromMedia(media: HtmlMediaLike): PlayerTracks {
       available: true,
     }));
   const selectedTextId = tracks.find((entry) => entry.track.mode === 'showing')?.id ?? null;
-  return { audio: [], text, selectedAudioId: null, selectedTextId };
+  const audio = Array.from(media.audioTracks ?? []).map((track, index) => ({ id: `audio:${index}`, label: track.label || track.language || `Audio ${index + 1}`, language: track.language, available: true }));
+  const selectedAudio = Array.from(media.audioTracks ?? []).findIndex(track => track.enabled);
+  return { audio, text, selectedAudioId: selectedAudio >= 0 ? `audio:${selectedAudio}` : null, selectedTextId };
 }
 
 function knownDuration(duration: number): number | null {

@@ -5,6 +5,11 @@ const { chromium, firefox, webkit } = require('@playwright/test');
 const url = process.env.MEDIA_TEST_URL || 'https://viptv.local.test:18790/tests/browser/index.html';
 const names = (process.env.MEDIA_TEST_BROWSERS || 'chromium,firefox,webkit').split(',');
 const results = [];
+async function deadline(promise, milliseconds = 25000) {
+  let timer;
+  try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Open timed out')), milliseconds); })]); }
+  finally { clearTimeout(timer); }
+}
 for (const name of names) {
   let browser;
   try {
@@ -19,12 +24,17 @@ for (const name of names) {
       for(const file of ['h264-aac.mkv','long-gop.mkv','multi-audio.mkv']) {
         const start=Date.now();
         try {
-          await page.evaluate(({file,engine})=>window.mediaTest.open(file,engine),{file,engine});
+          console.log('CASE',name,engine,file);
+          await page.mouse.click(20,20);
+          await deadline(page.evaluate(({file,engine})=>window.mediaTest.open(file,engine),{file,engine}));
           await page.waitForFunction(()=>window.mediaTest.snapshot?.time.positionSeconds>0.3);
           await page.evaluate(()=>window.mediaTest.pause());
           await page.evaluate(()=>window.mediaTest.seek(7));
           const paused=await page.evaluate(()=>window.mediaTest.snapshot);
           if(Math.abs(paused.time.positionSeconds-7)>0.08)throw Error(`Paused seek outside 80ms: ${paused.time.positionSeconds}`);
+          await page.waitForTimeout(150);
+          const presented=await page.evaluate(()=>window.mediaTest.presentation());
+          if(presented!==undefined&&Math.abs(presented-7)>0.08)throw Error(`Presented frame outside 80ms: ${presented}`);
           if(file==='multi-audio.mkv') {
             const id=paused.tracks.audio.find(t=>t.language==='spa')?.id;
             if(!id)throw Error('Spanish audio missing');
