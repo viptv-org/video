@@ -47,7 +47,7 @@ const api = {
 };
 const snake = (value: unknown): unknown => Array.isArray(value) ? value.map(snake) : value && typeof value === 'object'
   ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`), snake(item)])) : value;
-Object.assign(api, { async server(fixture: string) {
+Object.assign(api, { async server(fixture: string, managed = false) {
   await serverController?.stop();
   unsubscribe?.(); await player?.dispose();
   player = createPlayer({platform:'html5',video,canvas}); await player.setMuted?.(true);
@@ -55,8 +55,8 @@ Object.assign(api, { async server(fixture: string) {
   let capabilities: PlaybackCapabilities = await deliveryCapabilitiesFor('html5')();
   const controller = new PlaybackSessionController({player,capabilities,backend:{
     async startPlayback(request) {
-      capabilities = { ...request.capabilities, directPlay: !request.managedOnly };
-      const response = await fetch('/engine/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixture,position:request.position ?? 0,capabilities:snake(capabilities),force:request.forceTranscode ?? false})});
+      capabilities = { ...request.capabilities, directPlay: !request.managedOnly && !managed };
+      const response = await fetch('/engine/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixture,live:fixture.startsWith('continuous'),position:request.position ?? 0,capabilities:snake(capabilities),force:request.forceTranscode ?? false})});
       if(!response.ok)throw Object.assign(new Error('Fixture preparation failed'),{status:response.status});
       const raw=await response.json();
       const value={id:raw.id,url:new URL(raw.url,location.href).href,headers:{},format:raw.format,mode:raw.mode,videoMode:raw.video_mode,audioMode:raw.audio_mode,position:raw.position,live:raw.live,duration:raw.duration,audioTracks:[],subtitleTracks:[],subtitlesSupported:false};
@@ -65,7 +65,7 @@ Object.assign(api, { async server(fixture: string) {
   }});
   serverController = controller;
   unsubscribe=player.subscribe(value=>{snapshot=value;void controller.recoverPlayback(value).catch(()=>{});});
-  await controller.start({item:{id:fixture,type:'movie'},source:{id:fixture}});
+  await controller.start({item:{id:fixture,type:fixture.startsWith('continuous')?'live':'movie'},source:{id:fixture}});
   return {sessions,snapshot};
 } });
 Object.assign(window, { mediaTest: api });

@@ -23,10 +23,10 @@ const server = await createServer({ root: process.cwd(), configFile: false, serv
       }
       if (req.url?.startsWith('/results') && req.method === 'POST') { let body = ''; req.on('data', chunk => { body += chunk; if (body.length > 1024 * 1024) req.destroy(); }); req.on('end', () => { const value = JSON.parse(body); writeFileSync(resultFile, JSON.stringify(value, null, 2)); console.log('TV_RESULT', JSON.stringify({ stage: value.stage, results: value.results, time: value.snapshot?.time, state: value.snapshot?.state })); res.end('ok'); }); return; }
       if (!req.url?.startsWith('/media/fixtures/cap/')) return next();
-      if (req.url.includes('/continuous.ts')) {
+      if (/\/continuous(?:-ac3)?\.ts/.test(req.url)) {
         res.writeHead(200, {'Content-Type':'video/mp2t','Cache-Control':'no-store'});
         if (req.method === 'HEAD') { res.end(); return; }
-        const ffmpeg = spawn('ffmpeg', ['-v','error','-re','-stream_loop','-1','-i',resolve(fixtures,'h264-aac.mkv'),'-c','copy','-f','mpegts','pipe:1'], {stdio:['ignore','pipe','ignore']});
+        const ffmpeg = spawn('ffmpeg', ['-v','error','-re','-stream_loop','-1','-i',resolve(fixtures,req.url.includes('-ac3')?'h264-ac3.mkv':'h264-aac.mkv'),'-c','copy','-f','mpegts','pipe:1'], {stdio:['ignore','pipe','ignore']});
         ffmpeg.stdout.pipe(res); res.on('close',()=>ffmpeg.kill()); ffmpeg.on('error',()=>res.destroy()); return;
       }
       if (req.url.includes('/live.m3u8')) {
