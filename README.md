@@ -1,5 +1,10 @@
 # VIPTV video
 
+Actions delivery: main pushes and manual builds produce sideloading artifacts
+(Android universal APK; desktop Windows/Linux installers; Roku ZIP; TV WGT/IPK).
+Other repositories have no Actions workflows. Local checks remain; previous
+CI/release-publication descriptions below are historical. No automatic deploys.
+
 The canonical headless playback controller for VIPTV: the `Player` interface,
 the platform adapters (MediaBunny/WebCodecs behind an HTML5 fallback, Vizio
 HTML/HLS, Samsung Tizen AVPlay, and the Tauri native engine), and the

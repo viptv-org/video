@@ -1,5 +1,10 @@
 # VIPTV video agent guide
 
+Delivery policy (owner approved 2026-09-27): only Android, desktop, Roku and TV-web
+build workflows remain, triggered by main pushes and manual dispatch. No PR
+gates, automatic releases, image publishing or deployment. Retain local checks.
+This supersedes older automation/release-gate instructions below.
+
 Read `DESIGN_REF` and `SPEC.md` first. This repository owns the headless
 playback controller: the `Player` interface, the platform adapters (MediaBunny
 with an HTML fallback, Vizio HTML/HLS, Tizen AVPlay, and the Tauri native
