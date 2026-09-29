@@ -11,6 +11,7 @@ import {
   asError,
   escalatePreparation,
   itemKind,
+  isOriginalDelivery,
   playbackRequest,
   playerState,
   recoveryRequest,
@@ -138,9 +139,9 @@ export class PlaybackSessionController<
           return await this.transition(intent, request, this.current, () => operation === this.operationGeneration);
         } catch (error) {
           if (operation !== this.operationGeneration) return this.cancelledResult();
-          // A direct-URL client never accepts managed delivery; a refusal
-          // surfaces instead of escalating up the delivery ladder.
-          const escalated = request.capabilities.directUrls !== true && attempt < 2
+          // Native direct is preferred, but an authorized gateway may deliver
+          // an otherwise unsupported source. The backend enforces grants.
+          const escalated = attempt < 2
             ? escalatePreparation(request, error)
             : undefined;
           if (!escalated) throw error;
@@ -165,9 +166,6 @@ export class PlaybackSessionController<
     if (['opening', 'replacing', 'preparing-next'].includes(this.currentSnapshot.state)) return true;
     const active = this.current;
     if (!active || snapshot.sessionId !== this.activePlayerSessionId) return true;
-    // A direct-URL client never escalates to managed delivery; the decoder
-    // failure surfaces honestly instead.
-    if (active.request.capabilities.directUrls) return false;
     const recovery = recoveryRequest(active.session, active.request, snapshot.error.code);
     const request = recovery ? { ...recovery, ...snapshot.error.selection, ...(snapshot.error.reason ? { conversionReason: snapshot.error.reason } : {}) } : undefined;
     if (!request || this.recoveredSessions.has(active.session.id)) return false;
@@ -186,7 +184,7 @@ export class PlaybackSessionController<
     const operation = ++this.operationGeneration;
     const active = this.requireActive();
     if (!Number.isFinite(position) || position < 0) throw new Error('Seek position must be a non-negative number.');
-    if (active.session.mode === 'direct') {
+    if (isOriginalDelivery(active.session)) {
       await this.options.player.seek(position);
       return;
     }
@@ -207,7 +205,7 @@ export class PlaybackSessionController<
     this.cancelNext(false);
     const operation = ++this.operationGeneration;
     const active = this.requireActive();
-    if (active.session.mode === 'direct') {
+    if (isOriginalDelivery(active.session)) {
       await this.options.player.seek(resolvePosition());
       return;
     }
@@ -233,7 +231,7 @@ export class PlaybackSessionController<
     const active = this.requireActive();
     const position = this.options.player.snapshot.time.positionSeconds;
     const request: PlaybackStart = { ...active.request, position, ...selection,
-      ...(active.request.capabilities.directUrls ? {} : { managedOnly: true }),
+      ...(!isOriginalDelivery(active.session) ? { managedOnly: true } : {}),
       ...(selection.subtitlesOff ? { subtitleTrackIndex: undefined } : {}) };
     await this.transition({ ...active.intent, position }, request, active, () => operation === this.operationGeneration);
   }
@@ -334,9 +332,7 @@ export class PlaybackSessionController<
           await this.options.player.open(adapterRequest(session, itemKind(intent.item), request.position ?? 0, wasPaused));
           break;
         } catch (cause) {
-          // A direct-URL client never escalates an open failure into managed
-          // delivery; the adapter error surfaces instead.
-          const recovery = cause instanceof PlayerOperationError && request.capabilities.directUrls !== true
+          const recovery = cause instanceof PlayerOperationError
             ? recoveryRequest(session, request, cause.code)
             : undefined;
           if (!stillWanted() || !recovery) throw cause;

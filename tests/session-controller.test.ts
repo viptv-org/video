@@ -117,42 +117,46 @@ describe('PlaybackSessionController', () => {
       streamId: source.id, position: 42, capabilities, managedOnly: true, forceTranscode: true,
     });
   });
-  it('never escalates a direct-URL client to managed delivery on a delivery refusal', async () => {
+  it('lets a direct-capable client request an authorized gateway after a delivery refusal', async () => {
     const player = new FakePlayer();
     const backend = {
-      startPlayback: vi.fn().mockRejectedValue(new TvApiError(406, 'Playback could not start; try forced transcoding or another stream')),
+      startPlayback: vi.fn().mockRejectedValueOnce(new TvApiError(406, 'Unsupported direct delivery'))
+        .mockResolvedValueOnce({ ...session('gateway', 'https://gateway.example/media/cap/index.m3u8'), deliveryKind: 'gateway' }),
       stopPlayback: vi.fn().mockResolvedValue(undefined),
     };
     const controller = new PlaybackSessionController({ player, backend, capabilities: { ...capabilities, directUrls: true } });
-    await expect(controller.start({ item, source })).rejects.toMatchObject({ status: 406 });
-    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
+    await controller.start({ item, source });
+    expect(backend.startPlayback).toHaveBeenCalledTimes(2);
+    expect(backend.startPlayback.mock.calls[1][0]).toMatchObject({ managedOnly: true, streamId: source.id });
   });
 
-  it('never escalates a direct-URL client to managed delivery on an unsupported-format open failure', async () => {
+  it('falls back from native direct to an authorized gateway on unsupported format', async () => {
     const player = new FakePlayer();
     player.failUrl = '/media/s/cap/source.mp4';
     player.failError = new PlayerOperationError('unsupported-format', 'the native engine could not demux this source');
     const backend = {
-      startPlayback: vi.fn().mockResolvedValue(session('direct', '/media/s/cap/source.mp4', 'direct')),
+      startPlayback: vi.fn().mockResolvedValueOnce(session('direct', '/media/s/cap/source.mp4', 'direct'))
+        .mockResolvedValueOnce({ ...session('gateway', 'https://gateway.example/media/cap/index.m3u8'), deliveryKind: 'gateway' }),
       stopPlayback: vi.fn().mockResolvedValue(undefined),
     };
     const controller = new PlaybackSessionController({ player, backend, capabilities: { ...capabilities, directUrls: true } });
-    await expect(controller.start({ item, source })).rejects.toMatchObject({ code: 'unsupported-format' });
-    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
+    await controller.start({ item, source });
+    expect(backend.startPlayback).toHaveBeenCalledTimes(2);
     expect(backend.stopPlayback).toHaveBeenCalledWith('direct');
   });
 
-  it('never recovers a direct-URL client into managed delivery after a late decoder failure', async () => {
+  it('recovers a direct-capable client through its backend after a late decoder failure', async () => {
     const player = new FakePlayer();
     const backend = {
-      startPlayback: vi.fn().mockResolvedValue(session('direct', '/media/s/cap/source.mp4', 'direct')),
+      startPlayback: vi.fn().mockResolvedValueOnce(session('direct', '/media/s/cap/source.mp4', 'direct'))
+        .mockResolvedValueOnce({ ...session('gateway', 'https://gateway.example/media/cap/index.m3u8'), deliveryKind: 'gateway' }),
       stopPlayback: vi.fn().mockResolvedValue(undefined),
     };
     const controller = new PlaybackSessionController({ player, backend, capabilities: { ...capabilities, directUrls: true } });
     await controller.start({ item, source });
     player.snapshot = { ...player.snapshot, state: 'error', error: { code: 'unsupported-format', message: 'DEMUXER_ERROR_COULD_NOT_PARSE' } };
-    expect(await controller.recoverPlayback(player.snapshot)).toBe(false);
-    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
+    expect(await controller.recoverPlayback(player.snapshot)).toBe(true);
+    expect(backend.startPlayback).toHaveBeenCalledTimes(2);
   });
 
   it('carries a direct-URL session source authorization into the open request', async () => {

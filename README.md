@@ -31,7 +31,7 @@ and MIT license texts remain intact.
   failures. Adapters fail honestly where an engine lacks a capability.
 - `PlaybackSessionController` — coordinates the server's opaque session
   through a `PlaybackBackend` port (`startPlayback`/`stopPlayback`), escalates
-  delivery refusals (status 0 or 406) through the managed ladder, and restores
+  delivery refusals (406, not network outages) through the managed ladder, and restores
   the outgoing session when a candidate cannot open.
 - Server contract types — `PlaybackCapabilities`, `PlaybackStart`,
   `PlaybackSessionView`, `PlaybackMediaTrack` — so applications bind their own
@@ -40,6 +40,15 @@ and MIT license texts remain intact.
   (canPlayType, MediaCapabilities.decodingInfo, MSE, WebCodecs probe).
 
 ## Development
+
+BE-002 migration: `PlaybackSessionView.deliveryKind` distinguishes original
+direct delivery from an independent gateway, separately from processing `mode`.
+Native `directUrls` is capability evidence, not a prohibition on a server-
+authorized gateway fallback. The app must normalize v2 envelopes and own polling,
+lease renewal and cancellation; updating this library alone does not migrate
+the control API. Fetch-managed media accepts the selected gateway origin/base
+path, fences dependent requests, blocks redirects and omits ambient credentials.
+See VALIDATION.md for actual browser evidence and native-HLS limitations.
 
 ```sh
 npm ci          # install from the committed lockfile; prepare builds dist-js
