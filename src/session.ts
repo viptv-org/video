@@ -78,7 +78,7 @@ export type PlaybackControllerListener<
  * HTTP-like `status` where 0 means transport failure.
  */
 export interface PlaybackBackend {
-  startPlayback(request: PlaybackStart): Promise<PlaybackSessionView>;
+  startPlayback(request: PlaybackStart, options?: { readonly signal?: AbortSignal }): Promise<PlaybackSessionView>;
   stopPlayback(sessionId: string): Promise<void>;
 }
 
@@ -102,6 +102,21 @@ export class PlaybackSessionController<
   private current: PlaybackControllerActive<Item, Source> | null = null;
   private nextGeneration = 0;
   private operationGeneration = 0;
+  private readonly pendingStarts = new Map<AbortController, () => boolean>();
+
+  private nextOperation(): number {
+    this.operationGeneration += 1;
+    for (const [controller, wanted] of this.pendingStarts) if (!wanted()) controller.abort();
+    return this.operationGeneration;
+  }
+
+  private async prepareSession(request: PlaybackStart, wanted: () => boolean): Promise<PlaybackSessionView> {
+    const controller = new AbortController();
+    this.pendingStarts.set(controller, wanted);
+    if (!wanted()) controller.abort();
+    try { return await this.options.backend.startPlayback(request, { signal: controller.signal }); }
+    finally { this.pendingStarts.delete(controller); }
+  }
   private activePlayerSessionId = 0;
   private pausedPlayerSessionId = 0;
   private readonly recoveredSessions = new Set<string>();
@@ -124,7 +139,7 @@ export class PlaybackSessionController<
   async start(intent: SessionStartIntent<Item, Source>): Promise<PlaybackControllerActive<Item, Source>> {
     this.recoveredSessions.clear();
     this.cancelNext(false);
-    const operation = ++this.operationGeneration;
+    const operation = this.nextOperation();
     this.publish({ state: this.current ? 'replacing' : 'opening', active: this.current, error: null });
     try {
       const capabilities = await this.resolveCapabilities();
@@ -171,7 +186,7 @@ export class PlaybackSessionController<
     if (!request || this.recoveredSessions.has(active.session.id)) return false;
     this.recoveredSessions.add(active.session.id);
     this.cancelNext(false);
-    const operation = ++this.operationGeneration;
+    const operation = this.nextOperation();
     const position = active.intent.item.type === 'live' ? 0 : snapshot.time.positionSeconds;
     const paused = this.pausedPlayerSessionId === snapshot.sessionId;
     await this.transition({ ...active.intent, position }, { ...request, position }, active,
@@ -181,7 +196,7 @@ export class PlaybackSessionController<
 
   async seek(position: number): Promise<void> {
     this.cancelNext(false);
-    const operation = ++this.operationGeneration;
+    const operation = this.nextOperation();
     const active = this.requireActive();
     if (!Number.isFinite(position) || position < 0) throw new Error('Seek position must be a non-negative number.');
     if (isOriginalDelivery(active.session)) {
@@ -203,7 +218,7 @@ export class PlaybackSessionController<
     currentPosition: () => number,
   ): Promise<void> {
     this.cancelNext(false);
-    const operation = ++this.operationGeneration;
+    const operation = this.nextOperation();
     const active = this.requireActive();
     if (isOriginalDelivery(active.session)) {
       await this.options.player.seek(resolvePosition());
@@ -227,7 +242,7 @@ export class PlaybackSessionController<
 
   async replaceTracks(selection: TrackReplacement): Promise<void> {
     this.cancelNext(false);
-    const operation = ++this.operationGeneration;
+    const operation = this.nextOperation();
     const active = this.requireActive();
     const position = this.options.player.snapshot.time.positionSeconds;
     const request: PlaybackStart = { ...active.request, position, ...selection,
@@ -244,7 +259,7 @@ export class PlaybackSessionController<
   async prepareNext(resolveNext: () => Promise<SessionStartIntent<Item, Source> | null>): Promise<void> {
     const active = this.requireActive();
     const generation = ++this.nextGeneration;
-    const operation = ++this.operationGeneration;
+    const operation = this.nextOperation();
     this.restoreRequestedOperation = null;
     this.publish({ state: 'preparing-next', active, error: null });
     try {
@@ -286,7 +301,7 @@ export class PlaybackSessionController<
     }
     this.nextGeneration += 1;
     if (this.currentSnapshot.state === 'preparing-next' || this.currentSnapshot.state === 'replacing') {
-      this.operationGeneration += 1;
+      this.nextOperation();
       this.publish({ state: playerState(this.options.player), active: this.current, error: null });
     }
   }
@@ -294,7 +309,7 @@ export class PlaybackSessionController<
   async stop(): Promise<void> {
     this.recoveredSessions.clear();
     this.cancelNext(false);
-    this.operationGeneration += 1;
+    this.nextOperation();
     const active = this.current;
     this.current = null;
     await this.options.player.stop();
@@ -315,7 +330,7 @@ export class PlaybackSessionController<
     this.publish({ state: previous ? 'replacing' : 'opening', active: previous, error: null });
     let session: PlaybackSessionView;
     try {
-      session = await this.options.backend.startPlayback(request);
+      session = await this.prepareSession(request, stillWanted);
     } catch (cause) {
       if (!stillWanted()) return this.cancelledResult();
       const error = asError(cause);
@@ -339,7 +354,7 @@ export class PlaybackSessionController<
           await this.options.backend.stopPlayback(session.id);
           if (!stillWanted()) throw new DOMException('Playback operation was cancelled.', 'AbortError');
           request = { ...recovery, ...(cause instanceof PlayerOperationError ? cause.selection : {}), ...(cause instanceof PlayerOperationError && cause.reason ? { conversionReason: cause.reason } : {}) };
-          session = await this.options.backend.startPlayback(request);
+          session = await this.prepareSession(request, stillWanted);
           if (!stillWanted()) throw new DOMException('Playback operation was cancelled.', 'AbortError');
         }
       }

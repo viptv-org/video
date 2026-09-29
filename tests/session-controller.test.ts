@@ -44,6 +44,25 @@ function session(id: string, url: string, mode = 'managed', position = 0): Playb
 }
 
 describe('PlaybackSessionController', () => {
+  it('aborts an outstanding backend admission when playback is stopped', async () => {
+    let signal: AbortSignal | undefined;
+    const player = new FakePlayer();
+    const backend = {
+      startPlayback: vi.fn((_request: unknown, options?: { signal?: AbortSignal }) => new Promise<PlaybackSessionView>((_resolve, reject) => {
+        signal = options?.signal;
+        signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      })),
+      stopPlayback: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities });
+    const opening = controller.start({ item, source }).catch(error => error);
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    await controller.stop();
+    expect(signal?.aborted).toBe(true);
+    await opening;
+    expect(controller.snapshot.state).toBe('stopped');
+    expect(player.opened).toHaveLength(0);
+  });
   it('escalates a delivery refusal through managed output and a forced transcode', async () => {
     const player = new FakePlayer();
     const backend = {
@@ -56,8 +75,8 @@ describe('PlaybackSessionController', () => {
     const controller = new PlaybackSessionController({ player, backend, capabilities });
     const active = await controller.start({ item, source });
     expect(backend.startPlayback).toHaveBeenCalledTimes(3);
-    expect(backend.startPlayback).toHaveBeenNthCalledWith(2, expect.objectContaining({ managedOnly: true }));
-    expect(backend.startPlayback).toHaveBeenNthCalledWith(3, expect.objectContaining({ managedOnly: true, forceTranscode: true }));
+    expect(backend.startPlayback).toHaveBeenNthCalledWith(2, expect.objectContaining({ managedOnly: true }), expect.objectContaining({ signal: expect.anything() }));
+    expect(backend.startPlayback).toHaveBeenNthCalledWith(3, expect.objectContaining({ managedOnly: true, forceTranscode: true }), expect.objectContaining({ signal: expect.anything() }));
     expect(active.session.id).toBe('transcoded');
   });
   it('does not convert media when the API network request fails', async () => {
@@ -76,7 +95,7 @@ describe('PlaybackSessionController', () => {
     const controller = new PlaybackSessionController({ player, backend, capabilities });
     await expect(controller.start({ item, source })).rejects.toMatchObject({ status: 406 });
     expect(backend.startPlayback).toHaveBeenCalledTimes(3);
-    expect(backend.startPlayback).toHaveBeenNthCalledWith(3, expect.objectContaining({ managedOnly: true, forceTranscode: true }));
+    expect(backend.startPlayback).toHaveBeenNthCalledWith(3, expect.objectContaining({ managedOnly: true, forceTranscode: true }), expect.objectContaining({ signal: expect.anything() }));
   });
   it('never retries a validation, authorization, or capacity refusal as a delivery problem', async () => {
     for (const status of [400, 401, 403, 404, 409, 429]) {
@@ -106,7 +125,7 @@ describe('PlaybackSessionController', () => {
     player.snapshot = { ...player.snapshot, state: 'error', error: { code: 'unsupported-format', message: 'DEMUXER_ERROR_COULD_NOT_PARSE' } };
     const failedSnapshot = player.snapshot;
     expect(await controller.recoverPlayback(failedSnapshot)).toBe(true);
-    expect(backend.startPlayback).toHaveBeenNthCalledWith(2, { streamId: source.id, position: 42, capabilities, managedOnly: true });
+    expect(backend.startPlayback).toHaveBeenNthCalledWith(2, { streamId: source.id, position: 42, capabilities, managedOnly: true }, expect.objectContaining({ signal: expect.anything() }));
     expect(player.opened[1]).toMatchObject({ paused: true, startAtSeconds: 0, timelineOffsetSeconds: 42 });
     expect(backend.stopPlayback).toHaveBeenCalledWith('direct');
     expect(await controller.recoverPlayback(failedSnapshot)).toBe(true);
@@ -115,7 +134,7 @@ describe('PlaybackSessionController', () => {
     expect(await controller.recoverPlayback(player.snapshot)).toBe(true);
     expect(backend.startPlayback).toHaveBeenNthCalledWith(3, {
       streamId: source.id, position: 42, capabilities, managedOnly: true, forceTranscode: true,
-    });
+    }, expect.objectContaining({ signal: expect.anything() }));
   });
   it('lets a direct-capable client request an authorized gateway after a delivery refusal', async () => {
     const player = new FakePlayer();
@@ -218,7 +237,7 @@ it('coalesces rapid managed seeks so a superseded replacement never holds provid
     await controller.start({ item, source });
     player.snapshot = { ...player.snapshot, state: 'paused', time: { positionSeconds: 12, durationSeconds: 100 } };
     await controller.seekFrom(() => 30, () => player.snapshot.time.positionSeconds);
-    expect(backend.startPlayback).toHaveBeenNthCalledWith(2, { streamId: source.id, position: 30, capabilities });
+    expect(backend.startPlayback).toHaveBeenNthCalledWith(2, { streamId: source.id, position: 30, capabilities }, expect.objectContaining({ signal: expect.anything() }));
     // The replacement opened at the delivery offset and resumed paused.
     expect(player.opened[1]).toMatchObject({ paused: true, startAtSeconds: 0, timelineOffsetSeconds: 30 });
     expect(backend.stopPlayback).toHaveBeenCalledWith('first');
@@ -272,7 +291,7 @@ it('coalesces rapid managed seeks so a superseded replacement never holds provid
     const active = await controller.start({ item, source, position: 25 });
     expect(backend.startPlayback).toHaveBeenNthCalledWith(2, {
       streamId: source.id, position: 25, capabilities, managedOnly: true,
-    });
+    }, expect.objectContaining({ signal: expect.anything() }));
     expect(backend.stopPlayback).toHaveBeenCalledWith('direct');
     expect(backend.stopPlayback).not.toHaveBeenCalledWith('managed');
     expect(active.session.id).toBe('managed');
@@ -293,8 +312,8 @@ it('coalesces rapid managed seeks so a superseded replacement never holds provid
     const active = await controller.start({ item: { ...item, type: 'live' } });
     expect(active.session.id).toBe('transcoded');
     expect(backend.startPlayback).toHaveBeenCalledTimes(3);
-    expect(backend.startPlayback).toHaveBeenNthCalledWith(2, { channelId: item.id, position: 0, capabilities, managedOnly: true });
-    expect(backend.startPlayback).toHaveBeenNthCalledWith(3, { channelId: item.id, position: 0, capabilities, managedOnly: true, forceTranscode: true });
+    expect(backend.startPlayback).toHaveBeenNthCalledWith(2, { channelId: item.id, position: 0, capabilities, managedOnly: true }, expect.objectContaining({ signal: expect.anything() }));
+    expect(backend.startPlayback).toHaveBeenNthCalledWith(3, { channelId: item.id, position: 0, capabilities, managedOnly: true, forceTranscode: true }, expect.objectContaining({ signal: expect.anything() }));
     expect(backend.stopPlayback.mock.calls.map(([id]) => id)).toEqual(['direct', 'managed']);
   });
 
@@ -423,7 +442,7 @@ it('coalesces rapid managed seeks so a superseded replacement never holds provid
     await player.pause();
     await controller.seek(55);
 
-    expect(backend.startPlayback).toHaveBeenLastCalledWith(expect.objectContaining({ position: 55, subtitleTrackIndex: 4, subtitlesOff: false }));
+    expect(backend.startPlayback).toHaveBeenLastCalledWith(expect.objectContaining({ position: 55, subtitleTrackIndex: 4, subtitlesOff: false }), expect.objectContaining({ signal: expect.anything() }));
     expect(player.opened.at(-1)).toMatchObject({ url: 'https://media/seek', startAtSeconds: 0, timelineOffsetSeconds: 55, paused: true });
   });
 });
