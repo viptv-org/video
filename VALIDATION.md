@@ -1,5 +1,17 @@
 # Validation
 
+## Native direct source headers — 2026-09-29
+
+Typecheck, 111 tests and build passed. Direct deliveries preserve arbitrary
+required source headers through the Tauri IPC boundary, with Cookie/User-Agent
+mapped to native properties. Invalid or conflicting values fail before replacing
+an active native session, without exposing values. Browser and AVPlay transports
+reject unsupported headers explicitly; the controller may request authorized
+gateway proxy delivery once, without forcing encoding. Native authorization,
+connection and missing-source failures retain distinct player codes. These are
+adapter/controller tests; real Linux engine evidence is in the plugin's
+VALIDATION.md. Windows/physical TV qualification remains pending.
+
 ## Backend admission cancellation — 2026-09-29
 
 Controller generations now abort obsolete pending backend admissions through an

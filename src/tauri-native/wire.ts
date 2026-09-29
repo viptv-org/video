@@ -46,6 +46,9 @@ export function playerErrorCodeFor(wireCode: string | undefined, fallback: Playe
     // session controller may escalate the same source to managed output.
     case 'PIPELINE_FAILED':
       return 'unsupported-format';
+    case 'AUTHORIZATION_FAILED': return 'authorization-failed';
+    case 'CONNECTION_FAILED': return 'connection-failed';
+    case 'SOURCE_UNAVAILABLE': return 'expired-source';
     case 'INVALID_REQUEST':
       return 'prepare-failed';
     default:

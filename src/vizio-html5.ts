@@ -1,4 +1,5 @@
 import Hls, { FetchLoader } from 'hls.js';
+import { hasSourceAuthorization } from './source-authorization';
 import { checkedMediaDelivery, sessionMediaRequest } from './session-media-fetch';
 import { supportsNativeHls } from './browser-capabilities';
 import { SessionPlayer } from './session';
@@ -106,9 +107,9 @@ export class VizioHtml5Adapter extends SessionPlayer {
   open(request: OpenPlayerRequest): Promise<void> {
     try { checkedMediaDelivery(request.url); }
     catch (error) { return Promise.reject(error); }
-    if (request.authorization?.cookie || request.authorization?.userAgent) {
+    if (hasSourceAuthorization(request.authorization)) {
       return Promise.reject(new PlayerOperationError(
-        'unsupported-operation',
+        'authorization-unsupported',
         'The Vizio HTML player cannot attach credentials. Use a backend-compatible URL instead.',
       ));
     }

@@ -176,7 +176,7 @@ describe('VizioHtml5Adapter', () => {
       url: 'https://backend.example/direct.mp4',
       kind: 'vod',
       authorization: { cookie: 'session=private' },
-    })).rejects.toMatchObject({ code: 'unsupported-operation' });
+    })).rejects.toMatchObject({ code: 'authorization-unsupported' });
     expect(player.capabilities.canUseCookies).toBe(false);
     await expect(player.selectAudioTrack('audio:0')).rejects.toMatchObject({ code: 'unsupported-operation' });
   });

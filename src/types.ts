@@ -158,6 +158,8 @@ export interface PlayerSnapshot {
 }
 
 export interface PlaybackAuthorization {
+  /** Required upstream headers for a native direct delivery, never backend auth. */
+  readonly headers?: Readonly<Record<string, string>>;
   /** A server-provided Cookie header. The Vizio/HTML adapter cannot apply it. */
   readonly cookie?: string;
   /** A server-provided User-Agent. The Vizio/HTML adapter cannot apply it. */

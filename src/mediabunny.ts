@@ -1,5 +1,6 @@
 import { Input, UrlSource, ALL_FORMATS, CanvasSink, AudioBufferSink, type InputTrack, type InputVideoTrack, type InputAudioTrack, type WrappedCanvas, type WrappedAudioBuffer } from 'mediabunny';
 import { SessionPlayer } from './session';
+import { hasSourceAuthorization } from './source-authorization';
 import { PlayerOperationError, growOnlyDuration, timelineDuration, type OpenPlayerRequest, type PlayerCapabilities } from './types';
 
 import { mediaFailure, canChangeMediaPath } from './browser-policy';
@@ -87,7 +88,7 @@ export class MediabunnyAdapter extends SessionPlayer {
     const openedAt = performance.now();
     const token = ++this.generation;
     const sourceToken = this.sourceGeneration;
-    if (request.authorization?.cookie || request.authorization?.userAgent)
+    if (hasSourceAuthorization(request.authorization))
       throw new PlayerOperationError('authorization-unsupported', 'Playback requires a backend-compatible media URL.');
     const input = this.input = new Input({
       // Readahead and bounded retries stay the library defaults: disabling

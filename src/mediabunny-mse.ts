@@ -1,5 +1,6 @@
 import { ALL_FORMATS, Input, UrlSource, Output, Mp4OutputFormat, StreamTarget, Conversion, EncodedPacketSink, EncodedVideoPacketSource, EncodedAudioPacketSource, type InputVideoTrack, type InputAudioTrack } from 'mediabunny';
 import { SessionPlayer } from './session-player';
+import { hasSourceAuthorization } from './source-authorization';
 import { PlayerOperationError, timelineDuration, type OpenPlayerRequest, type PlayerCapabilities } from './types';
 import { sessionMediaFetch } from './session-media-fetch';
 import { mediaFailure } from './browser-policy';
@@ -34,6 +35,7 @@ export class MediabunnyMseAdapter extends SessionPlayer {
 
   constructor(private readonly media: HTMLVideoElement) { super(); }
   async open(request: OpenPlayerRequest): Promise<void> {
+    if (hasSourceAuthorization(request.authorization)) throw new PlayerOperationError('authorization-unsupported', 'This source requires gateway delivery for its request headers.');
     if (this.request?.url !== request.url || this.request?.qualityId !== request.qualityId) this.frameClockVerified = false;
     const generation = ++this.generation;
     await this.release();

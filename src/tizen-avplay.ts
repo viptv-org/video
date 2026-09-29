@@ -1,4 +1,5 @@
 import { SessionPlayer } from './session';
+import { checkedSourceAuthorization } from './source-authorization';
 import {
   type OpenPlayerRequest,
   type PlayerErrorCode,
@@ -298,8 +299,10 @@ export class TizenAvplayAdapter extends SessionPlayer {
   }
 
   private applyAuthorization(request: OpenPlayerRequest): void {
-    const authorization = request.authorization;
+    const authorization = checkedSourceAuthorization(request.authorization);
     if (!authorization) return;
+    if (Object.keys(authorization.headers ?? {}).length)
+      throw new PlayerOperationError('authorization-unsupported', 'This source requires gateway delivery for its request headers.');
     if (!this.avplay.setStreamingProperty) {
       throw new PlayerOperationError('authorization-unsupported', 'This AVPlay runtime cannot set authorization properties.');
     }

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { checkedSourceAuthorization } from './source-authorization';
 import { SessionPlayer } from './session';
 import { NativeAperture, type NativeLayout } from './tauri-native/aperture';
 import { TAURI_NATIVE_PLAYER_CAPABILITIES } from './tauri-native/capabilities';
@@ -123,6 +124,7 @@ export class TauriNativeAdapter extends SessionPlayer {
   }
 
   async open(request: OpenPlayerRequest): Promise<void> {
+    const authorization = checkedSourceAuthorization(request.authorization);
     await this.teardownNative();
     this.invalidateSession();
     const sessionId = this.startSession(request.kind);
@@ -178,8 +180,9 @@ export class TauriNativeAdapter extends SessionPlayer {
         autoplay: texture !== undefined || this.requestedPlaying,
         volume: textureBootstrap ? 0 : this.volume,
         muted: this.muted,
-        ...(request.authorization?.cookie ? { cookies: request.authorization.cookie } : {}),
-        ...(request.authorization?.userAgent ? { userAgent: request.authorization.userAgent } : {}),
+        ...(authorization?.cookie ? { cookies: authorization.cookie } : {}),
+        ...(authorization?.userAgent ? { userAgent: authorization.userAgent } : {}),
+        ...(authorization?.headers ? { headers: authorization.headers } : {}),
         ...(backend !== undefined ? { backend } : {}),
       };
       const snapshot = await this.openNativeSession(sessionKey, payload, sessionId);
