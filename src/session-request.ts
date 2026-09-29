@@ -83,6 +83,11 @@ export function recoveryRequest(
   request: PlaybackStart,
   code: PlayerFailure['code'],
 ): PlaybackStart | undefined {
+  // A direct media origin may be unreachable from this client (for example
+  // browser CORS). Try the authorized gateway once without forcing conversion.
+  // A control-API outage or a failure of managed delivery never takes this path.
+  if (code === 'connection-failed' && isOriginalDelivery(session) && !request.managedOnly)
+    return { ...request, managedOnly: true };
   if (!canChangeMediaPath({ code })) return undefined;
   if (isOriginalDelivery(session) && !request.managedOnly)
     return { ...request, managedOnly: true };

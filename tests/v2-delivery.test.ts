@@ -26,3 +26,12 @@ it('native HTTP direct remains an original delivery with its source credentials'
     adoptEngineDuration: true, deliveryMode: 'direct', authorization: direct.authorization,
   });
 });
+
+it('tries proxy delivery for a direct media connection failure but never forces encoding for it', () => {
+  const direct = { ...gateway, deliveryKind: 'direct' as const };
+  const first = recoveryRequest(direct, { ...start, managedOnly: false }, 'connection-failed');
+  expect(first).toMatchObject({ managedOnly: true });
+  expect(first?.forceTranscode).toBeUndefined();
+  expect(recoveryRequest(gateway, first!, 'connection-failed')).toBeUndefined();
+  expect(recoveryRequest(direct, first!, 'connection-failed')).toBeUndefined();
+});

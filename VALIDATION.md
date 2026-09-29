@@ -5,10 +5,14 @@
 Controller generations now abort obsolete pending backend admissions through an
 optional request signal. Stop, replacement and next-episode cancellation retain
 the existing late-result release/rollback checks for ports that ignore signals.
-105 tests, typechecking and build passed, including stop-before-admission-response
+106 tests, typechecking and build passed, including stop-before-admission-response
 and preventing a late stop acknowledgement from overwriting a newer playback.
 The application transport owns bounded remote cleanup; the controller does not
 log or process media credentials. Consumer integration is recorded in TV-web.
+Direct media connection failures may try one authorized gateway delivery without
+forcing encoding (for example browser CORS). A control-API outage or a managed
+media connection failure never triggers conversion. Unit coverage distinguishes
+these paths; provider/device network qualification remains separate.
 
 ## BE-002 gateway delivery preparation — 2026-09-29
 
