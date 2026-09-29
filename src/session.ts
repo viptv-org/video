@@ -309,12 +309,12 @@ export class PlaybackSessionController<
   async stop(): Promise<void> {
     this.recoveredSessions.clear();
     this.cancelNext(false);
-    this.nextOperation();
+    const operation = this.nextOperation();
     const active = this.current;
     this.current = null;
     await this.options.player.stop();
     if (active) await this.options.backend.stopPlayback(active.session.id);
-    this.publish({ state: 'stopped', active: null, error: null });
+    if (operation === this.operationGeneration) this.publish({ state: 'stopped', active: null, error: null });
   }
 
   private async transition(

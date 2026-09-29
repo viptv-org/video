@@ -44,6 +44,23 @@ function session(id: string, url: string, mode = 'managed', position = 0): Playb
 }
 
 describe('PlaybackSessionController', () => {
+  it('does not let a late stop acknowledgement overwrite a newer playback', async () => {
+    let release!: () => void;
+    const player = new FakePlayer();
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValueOnce(session('old', 'https://media/old')).mockResolvedValueOnce(session('new', 'https://media/new')),
+      stopPlayback: vi.fn(() => new Promise<void>(resolve => { release = resolve; })),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities });
+    await controller.start({ item, source });
+    const stopping = controller.stop();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    await controller.start({ item, source });
+    release();
+    await stopping;
+    expect(controller.snapshot.state).toBe('playing');
+    expect(controller.snapshot.active?.session.id).toBe('new');
+  });
   it('aborts an outstanding backend admission when playback is stopped', async () => {
     let signal: AbortSignal | undefined;
     const player = new FakePlayer();

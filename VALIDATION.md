@@ -5,7 +5,8 @@
 Controller generations now abort obsolete pending backend admissions through an
 optional request signal. Stop, replacement and next-episode cancellation retain
 the existing late-result release/rollback checks for ports that ignore signals.
-104 tests, typechecking and build passed, including stop-before-admission-response.
+105 tests, typechecking and build passed, including stop-before-admission-response
+and preventing a late stop acknowledgement from overwriting a newer playback.
 The application transport owns bounded remote cleanup; the controller does not
 log or process media credentials. Consumer integration is recorded in TV-web.
 
