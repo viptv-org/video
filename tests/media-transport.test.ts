@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { sessionMediaFetch, sessionMediaRequest } from '../src/session-media-fetch';
+import { sessionMediaFetch, sessionMediaRequest, transportStreamOffset } from '../src/session-media-fetch';
 const native = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: native.fetch }));
 beforeEach(() => { vi.stubGlobal('window', {}); vi.stubGlobal('location', new URL('https://app.example/')); });
@@ -63,4 +63,58 @@ it('uses Tauri native HTTP for MediaBunny resources without bypassing session sc
   await sessionMediaFetch(url)(url, { headers: { Range: 'bytes=0-255' } });
   expect(native.fetch).toHaveBeenCalledWith(url, expect.objectContaining({ maxRedirections: 0, redirect: 'error' }));
   expect(fetch).not.toHaveBeenCalled();
+});
+
+const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52]);
+const JPEG = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0]);
+const GIF = new TextEncoder().encode('GIF89a\x01\x00\x01\x00');
+function transportStream(packets: number): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(packets * 188).fill(0xff);
+  for (let i = 0; i < packets; i++) { bytes[i * 188] = 0x47; bytes[i * 188 + 1] = i; }
+  return bytes;
+}
+const join = (...parts: Uint8Array[]): Uint8Array<ArrayBuffer> => { const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); parts.reduce((at, p) => { out.set(p, at); return at + p.length; }, 0); return out; };
+
+it('finds the transport stream behind an image or junk disguise prefix', () => {
+  const ts = transportStream(8);
+  expect(transportStreamOffset(ts)).toBe(0);
+  for (const prefix of [PNG, JPEG, GIF, new TextEncoder().encode('/* css */ body{}')])
+    expect(transportStreamOffset(join(prefix, ts))).toBe(prefix.length);
+  expect(transportStreamOffset(new Uint8Array(4096).fill(0x47 + 1))).toBe(-1);
+  // A lone sync byte is not a packet run.
+  expect(transportStreamOffset(join(Uint8Array.of(0x47, 1, 2), new Uint8Array(1000)))).toBe(-1);
+});
+
+it('strips a disguise prefix from HLS segments regardless of name and Content-Type', async () => {
+  const ts = transportStream(8);
+  const segment = join(PNG, ts);
+  const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+    const range = /bytes=(\d+)-(\d*)/.exec(new Headers(init.headers).get('range') ?? '');
+    if (!range) return new Response(segment, { headers: { 'content-type': 'image/png', 'content-length': String(segment.length) } });
+    const start = Number(range[1]), end = range[2] ? Number(range[2]) : segment.length - 1;
+    return new Response(segment.slice(start, end + 1), { status: 206, headers: { 'content-type': 'image/png', 'content-range': `bytes ${start}-${end}/${segment.length}` } });
+  });
+  vi.stubGlobal('fetch', fetch);
+  const delivery = `${location.origin}/media/session/cap/index.m3u8`;
+  const request = sessionMediaFetch(delivery);
+  const first = await request(`${location.origin}/media/session/cap/seg0.png`, { headers: { Range: 'bytes=0-' } });
+  expect(first.headers.get('content-range')).toBe(`bytes 0-${ts.length - 1}/${ts.length}`);
+  expect(new Uint8Array(await first.arrayBuffer())).toEqual(ts);
+  // A later range of the same segment addresses the stripped stream.
+  const later = await request(`${location.origin}/media/session/cap/seg0.png`, { headers: { Range: 'bytes=188-375' } });
+  expect(new Headers(fetch.mock.calls[1]![1].headers).get('range')).toBe(`bytes=${188 + PNG.length}-${375 + PNG.length}`);
+  expect(later.headers.get('content-range')).toBe(`bytes 188-375/${ts.length}`);
+  expect(new Uint8Array(await later.arrayBuffer())).toEqual(ts.slice(188, 376));
+  const whole = await request(`${location.origin}/media/session/cap/seg1`);
+  expect(whole.headers.get('content-length')).toBe(String(ts.length));
+  expect(new Uint8Array(await whole.arrayBuffer())).toEqual(ts);
+});
+
+it('leaves undisguised segments and non-HLS files byte-for-byte intact', async () => {
+  const ts = transportStream(8), gif = join(GIF, ts);
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(url.endsWith('.mp4') ? gif : ts)));
+  const hls = sessionMediaFetch(`${location.origin}/media/session/cap/index.m3u8`);
+  expect(new Uint8Array(await (await hls(`${location.origin}/media/session/cap/seg.ts`)).arrayBuffer())).toEqual(ts);
+  const file = `${location.origin}/media/session/cap/movie.mp4`;
+  expect(new Uint8Array(await (await sessionMediaFetch(file)(file)).arrayBuffer())).toEqual(gif);
 });

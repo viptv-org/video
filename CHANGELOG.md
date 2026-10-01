@@ -5,6 +5,12 @@ Release numbering follows the
 
 ## Unreleased
 
+- Classify HLS segments by their bytes in the session media fetch: a
+  disguise prefix (fake PNG/JPEG/GIF header or other junk) before the first
+  MPEG-TS packet run is removed, later byte ranges of that segment are shifted
+  past it, and segment names or Content-Type headers are never trusted, so
+  MediaBunny plays IPTV segments served as `.png`, `.jpg`, `.css` or without
+  an extension.
 - Selectable native engines: `createPlayer({ platform: 'tauri', engine })`
   requests 'mpv' or 'gstreamer' through the plugin's backend field, with
   'auto' following the plugin's reported engine preference order, and the
