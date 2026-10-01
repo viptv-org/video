@@ -6,7 +6,7 @@ import { sessionMediaFetch } from './session-media-fetch';
 import { audioChoices, mediaLanguage } from './media-tracks';
 
 /** WebCodecs availability is a gate, never proof that the selected track decodes. */
-export function mediabunnyUnavailable(canvas?: HTMLCanvasElement): string | undefined {
+function mediabunnyUnavailable(canvas?: HTMLCanvasElement): string | undefined {
   if (!canvas) return 'A MediaBunny drawing surface is unavailable.';
   if (!globalThis.isSecureContext) return 'WebCodecs requires HTTPS or a trusted local context.';
   if (typeof BigInt === 'undefined' || typeof VideoDecoder === 'undefined' || typeof AudioContext === 'undefined')

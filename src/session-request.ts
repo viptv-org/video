@@ -26,7 +26,6 @@ export function adapterRequest(session: PlaybackSessionView, kind: PlaybackKind,
   return {
     preferredAudioLanguage: session.preferredAudioLanguage,
     preferredSubtitleLanguage: session.preferredSubtitleLanguage,
-    maximumHeight: session.maximumHeight,
     url: session.url,
     kind,
     startAtSeconds: direct ? position : Math.max(0, position - deliveryStart),
@@ -48,8 +47,9 @@ export function itemKind(item: PlaybackIntentItem): PlaybackKind {
   return item.type === 'live' ? 'live' : 'vod';
 }
 
-export function playerState(player: Player): Extract<PlaybackControllerState, 'playing' | 'opening' | 'error'> {
-  return player.snapshot.state === 'paused' ? 'playing' : player.snapshot.state === 'error' ? 'error' : 'playing';
+/** A settled controller is 'playing' (including paused) unless the adapter failed. */
+export function playerState(player: Player): Extract<PlaybackControllerState, 'playing' | 'error'> {
+  return player.snapshot.state === 'error' ? 'error' : 'playing';
 }
 
 export function asError(cause: unknown): Error {
@@ -66,8 +66,9 @@ function refusalStatus(error: unknown): number | undefined {
 /**
  * A delivery refusal is answered with the next delivery rung for the same
  * source: original delivery, then managed output, then a forced transcode.
- * Only a server delivery refusal (406) escalates; network failures never encode media.
- * validation (400) and every other answer keeps its own meaning.
+ * Only a server delivery refusal (406) escalates. Transport failures
+ * (status 0) never convert media, and validation (400) and every other
+ * answer keep their own meaning.
  */
 export function escalatePreparation(request: PlaybackStart, error: unknown): PlaybackStart | undefined {
   const status = refusalStatus(error);
@@ -75,6 +76,15 @@ export function escalatePreparation(request: PlaybackStart, error: unknown): Pla
   if (!request.managedOnly) return { ...request, managedOnly: true };
   if (!request.forceTranscode) return { ...request, managedOnly: true, forceTranscode: true };
   return undefined;
+}
+
+/**
+ * The retry request for a failed open or playback: the recovery rung plus the
+ * failure's track selection and conversion reason, so the server converts
+ * only what the device could not present.
+ */
+export function failureRetryRequest(recovery: PlaybackStart, failure: Pick<PlayerFailure, 'selection' | 'reason'> | undefined): PlaybackStart {
+  return { ...recovery, ...failure?.selection, ...(failure?.reason ? { conversionReason: failure.reason } : {}) };
 }
 
 /** Keep the selected source while escalating only after the cheaper rung fails. */

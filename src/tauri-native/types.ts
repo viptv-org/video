@@ -2,8 +2,9 @@ export type NativeVideoPlatform = 'linux' | 'windows';
 
 /**
  * The native playback engine a host may request. 'auto' follows the plugin's
- * documented preference order — mpv first on Linux when its runtime was
- * compiled — so hosts without an opinion get the engine the plugin prefers.
+ * documented preference order — GStreamer first, mpv as an explicit Linux
+ * alternative. An explicit engine the build did not compile fails open with
+ * `engine-unavailable`; hosts offer only engines from `native_diagnostics`.
  */
 export type NativeVideoEngine = 'auto' | 'mpv' | 'gstreamer';
 

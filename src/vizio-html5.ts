@@ -4,6 +4,7 @@ import { checkedMediaDelivery, sessionMediaRequest } from './session-media-fetch
 import { supportsNativeHls } from './browser-capabilities';
 import { SessionPlayer } from './session';
 import { mediaFailure } from './browser-policy';
+import { nonNegative } from './primitives';
 import {
   type OpenPlayerRequest,
   PlayerOperationError,
@@ -486,10 +487,6 @@ function tracksFromMedia(media: HtmlMediaLike): PlayerTracks {
 
 function knownDuration(duration: number): number | null {
   return Number.isFinite(duration) && duration > 0 ? duration : null;
-}
-
-function nonNegative(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 function mediaError(media: HtmlMediaLike, code: 'prepare-failed' | 'connection-failed'): PlayerOperationError {

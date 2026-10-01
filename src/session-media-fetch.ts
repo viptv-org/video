@@ -1,6 +1,6 @@
 import { PlayerOperationError } from './types';
 
-export interface TransferSample { readonly bytes: number; readonly seconds: number; }
+interface TransferSample { readonly bytes: number; readonly seconds: number; }
 /** The application supplies an authorized delivery, not an arbitrary proxy URL. */
 export function checkedMediaDelivery(value: string): URL {
   let url: URL;

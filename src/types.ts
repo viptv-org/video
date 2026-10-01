@@ -167,7 +167,6 @@ export interface PlaybackAuthorization {
 }
 
 export interface OpenPlayerRequest {
-  readonly maximumHeight?: number;
   readonly audioTrackId?: string;
   readonly textTrackId?: string | null;
   readonly qualityId?: string;
@@ -360,7 +359,6 @@ export interface PlaybackSessionView {
   readonly deliveryKind?: 'direct' | 'gateway';
   readonly preferredAudioLanguage?: string;
   readonly preferredSubtitleLanguage?: string;
-  readonly maximumHeight?: number;
   readonly headers: { readonly [key: string]: string };
   readonly id: string;
   readonly url: string;

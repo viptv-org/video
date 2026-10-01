@@ -6,8 +6,9 @@ import { PlayerOperationError, growOnlyDuration, timelineDuration, type OpenPlay
 import { mediaFailure, canChangeMediaPath } from './browser-policy';
 import { audioChoices, chooseAudio, trackId, videoChoices, AdaptiveQuality } from './media-tracks';
 import { sessionMediaFetch } from './session-media-fetch';
+import { delay } from './primitives';
 export { sessionMediaFetch } from './session-media-fetch';
-export const MEDIABUNNY_CAPABILITIES: PlayerCapabilities = {
+const MEDIABUNNY_CAPABILITIES: PlayerCapabilities = {
   platform: 'html5', engine: 'Mediabunny / WebCodecs', directNative: 'probe-required', adaptiveStreaming: 'probe-required', drm: 'unsupported',
   canPause: true, canSeek: true, canSetVolume: true, canSelectAudioTrack: true, canSelectTextTrack: false, canDisableTextTrack: false,
   canUseCookies: false, canUseUserAgent: false,
@@ -101,7 +102,6 @@ export class MediabunnyAdapter extends SessionPlayer {
     this.videoChoices = await videoChoices(input);
     this.qualityId = request.qualityId ?? 'auto';
     const video = this.videoChoices.tracks.find(t => trackId('video', t.id) === this.qualityId) ?? await input.getPrimaryVideoTrack();
-    if (request.maximumHeight && video && await video.getDisplayHeight() > request.maximumHeight) throw new PlayerOperationError('unsupported-format', 'The selected quality requires a smaller rendition.', undefined, 'rendering');
     if (!this.isCurrent(session) || token !== this.generation) return;
     if (!video || !(await ensureDecodable(video))) throw new PlayerOperationError('unsupported-format', 'Mediabunny cannot decode this video track.', undefined, 'video-codec');
     if (await video.hasHighDynamicRange()) throw new PlayerOperationError('unsupported-format', 'HDR requires a qualified presentation path.', undefined, 'rendering');
@@ -436,7 +436,6 @@ export class MediabunnyAdapter extends SessionPlayer {
     if (context && context.state !== 'closed') await context.close();
   }
 }
-function delay(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 /**
  * MediaBunny decodes whatever WebCodecs supports plus PCM; Dolby, DTS and ProRes

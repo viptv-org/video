@@ -1,5 +1,6 @@
 import { SessionPlayer } from './session';
 import { checkedSourceAuthorization } from './source-authorization';
+import { nonNegative } from './primitives';
 import {
   type OpenPlayerRequest,
   type PlayerErrorCode,
@@ -388,10 +389,6 @@ function parseTrackIndex(id: string): number {
   const index = Number(id.slice(id.indexOf(':') + 1));
   if (!Number.isInteger(index) || index < 0) throw new PlayerOperationError('unsupported-operation', `Invalid track identifier ${id}.`);
   return index;
-}
-
-function nonNegative(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 function operationFailure(code: PlayerErrorCode, message: string, cause?: unknown): PlayerOperationError {

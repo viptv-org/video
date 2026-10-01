@@ -7,7 +7,7 @@ import { mediaFailure } from './browser-policy';
 import { audioChoices, chooseAudio, trackId, videoChoices } from './media-tracks';
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
-export const MSE_COPY_CAPABILITIES: PlayerCapabilities = {
+const MSE_COPY_CAPABILITIES: PlayerCapabilities = {
   platform: 'html5', engine: 'Mediabunny packet copy / MSE', directNative: 'probe-required', adaptiveStreaming: 'probe-required', drm: 'unsupported',
   canPause: true, canSeek: true, canSetVolume: true, canSelectAudioTrack: true, canSelectTextTrack: false, canDisableTextTrack: false,
   canUseCookies: false, canUseUserAgent: false, limitations: ['Selected codecs must be supported by MSE; this path never encodes media.'],
@@ -51,7 +51,6 @@ export class MediabunnyMseAdapter extends SessionPlayer {
       const videos = await videoChoices(input);
       const video = videos.tracks.find(t => trackId('video', t.id) === request.qualityId) ?? await input.getPrimaryVideoTrack() ?? undefined;
       if (!video) throw new PlayerOperationError('unsupported-format', 'No copyable video track.', undefined, 'video-codec');
-      if (request.maximumHeight && await video.getDisplayHeight() > request.maximumHeight) throw new PlayerOperationError('unsupported-format', 'The selected quality requires a smaller rendition.', undefined, 'rendering');
       const audio = await chooseAudio(video, request);
       const codecs = await Promise.all([video, ...(audio ? [audio] : [])].map(t => t.getCodecParameterString()));
       if (signal.aborted) { input.dispose(); return; }

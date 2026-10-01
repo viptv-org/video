@@ -19,14 +19,13 @@ import {
   type PlayerErrorCode,
   type PlayerTime,
 } from './types';
+import { delay, nonNegative } from './primitives';
 import {
-  delay,
   engineDuration,
   hasEnded,
   nativeDiagnostics,
   nativeOperationError,
   newSessionKey,
-  nonNegative,
   sameLayout,
   selectedCodec,
   tracksFromNative,
@@ -71,7 +70,7 @@ export function resolveTauriVideoInvoker(): TauriVideoInvoker {
   return { invoke };
 }
 
-export function tauriNativePlatform(): NativeVideoPlatform | undefined {
+function tauriNativePlatform(): NativeVideoPlatform | undefined {
   if (/Windows/i.test(navigator.userAgent)) return 'windows';
   if (/Linux|X11/i.test(navigator.userAgent)) return 'linux';
   return undefined;
@@ -426,17 +425,21 @@ export class TauriNativeAdapter extends SessionPlayer {
 
   /**
    * Resolves the requested engine into the plugin's backend field. 'auto'
-   * follows the plugin's documented preference order; an explicit engine the
-   * diagnostics say is not compiled is not requested at all, so a stale
-   * persisted choice cannot fail every open while the running backend stays
-   * visible in diagnostics.
+   * follows the plugin's documented preference order (GStreamer first). An
+   * explicit engine the diagnostics say is not compiled fails here with a
+   * typed `engine-unavailable` error instead of silently playing on another
+   * engine; hosts offer only engines from `native_diagnostics`.
    */
   private resolveBackend(): string | undefined {
     const engines = this.nativeEngines;
     if (this.engine !== 'auto') {
-      return engines === undefined || engines.length === 0 || engines.includes(this.engine)
-        ? this.engine
-        : undefined;
+      if (engines !== undefined && engines.length > 0 && !engines.includes(this.engine)) {
+        throw new PlayerOperationError(
+          'engine-unavailable',
+          `The ${this.engine} engine is not available in this desktop build.`,
+        );
+      }
+      return this.engine;
     }
     return engines?.find(engine => engine.length > 0);
   }

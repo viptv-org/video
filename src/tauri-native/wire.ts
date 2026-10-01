@@ -29,7 +29,7 @@ export function newSessionKey(): string {
     ?? `viptv-native-${Date.now()}-${++nativeSessionSequence}`;
 }
 
-export function isWireError(value: unknown): value is NativeWireError {
+function isWireError(value: unknown): value is NativeWireError {
   return typeof value === 'object'
     && value !== null
     && typeof (value as { code?: unknown }).code === 'string'
@@ -37,7 +37,7 @@ export function isWireError(value: unknown): value is NativeWireError {
 }
 
 /** The plugin's serialized engine failures map onto the shared Player codes. */
-export function playerErrorCodeFor(wireCode: string | undefined, fallback: PlayerErrorCode): PlayerErrorCode {
+function playerErrorCodeFor(wireCode: string | undefined, fallback: PlayerErrorCode): PlayerErrorCode {
   switch (wireCode) {
     case 'PROTOCOL_MISMATCH':
     case 'RUNTIME_UNAVAILABLE':
@@ -63,11 +63,7 @@ export function nativeOperationError(cause: unknown, fallback: PlayerErrorCode, 
   return new PlayerOperationError(fallback, message, cause);
 }
 
-export function nonNegative(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : 0;
-}
-
-export function hlsish(url: string): boolean {
+function hlsish(url: string): boolean {
   return /\.m3u8(?:[?#]|$)/i.test(url);
 }
 
@@ -125,8 +121,4 @@ export function tracksFromNative(tracks: readonly NativeVideoTrack[]): PlayerTra
     }
   }
   return { audio, text, selectedAudioId, selectedTextId };
-}
-
-export function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }

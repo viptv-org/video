@@ -314,6 +314,20 @@ it('coalesces rapid managed seeks so a superseded replacement never holds provid
     expect(active.session.id).toBe('managed');
   });
 
+  it('stops a failed candidate session exactly once when its replacement cannot be admitted', async () => {
+    const player = new FakePlayer();
+    vi.spyOn(player, 'open').mockRejectedValueOnce(new PlayerOperationError('unsupported-format', 'Cannot parse media'));
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValueOnce(session('direct', '/direct.mp4', 'direct'))
+        .mockRejectedValueOnce(new TvApiError(503, 'gateway busy')),
+      stopPlayback: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities });
+    await expect(controller.start({ item, source })).rejects.toMatchObject({ status: 503 });
+    expect(backend.stopPlayback).toHaveBeenCalledTimes(1);
+    expect(backend.stopPlayback).toHaveBeenCalledWith('direct');
+  });
+
   it('uses full transcode only after direct and managed delivery cannot decode', async () => {
     const player = new FakePlayer();
     vi.spyOn(player, 'open')

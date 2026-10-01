@@ -281,21 +281,23 @@ describe('TauriNativeAdapter', () => {
     expect(explicit.openedPayloads[0].backend).toBe('gstreamer');
     await explicitPlayer.stop();
 
-    // 'auto' follows the plugin's documented preference order.
+    // 'auto' follows the plugin's documented preference order: the first
+    // compiled engine, which the plugin lists GStreamer-first.
     const auto = new FakeTauriVideoPlugin();
-    auto.diagnostics = { ...auto.diagnostics, engines: ['mpv', 'gstreamer'] };
+    auto.diagnostics = { ...auto.diagnostics, engines: ['gstreamer', 'mpv'] };
     const autoPlayer = createAdapter(auto).player;
     await autoPlayer.open({ url, kind: 'vod' });
-    expect(auto.openedPayloads[0].backend).toBe('mpv');
+    expect(auto.openedPayloads[0].backend).toBe('gstreamer');
     await autoPlayer.stop();
 
-    // An engine the build did not compile is not requested at all, so a
-    // stale persisted choice cannot fail every open.
+    // An explicit engine the build did not compile fails with a typed error
+    // before native_open; it never silently plays on another engine.
     const stale = new FakeTauriVideoPlugin();
     stale.diagnostics = { ...stale.diagnostics, engines: ['gstreamer'] };
     const stalePlayer = createAdapter(stale, { engine: 'mpv' }).player;
-    await stalePlayer.open({ url, kind: 'vod' });
-    expect('backend' in stale.openedPayloads[0]).toBe(false);
+    await expect(stalePlayer.open({ url, kind: 'vod' })).rejects.toMatchObject({ code: 'engine-unavailable' });
+    expect(stale.openedPayloads).toHaveLength(0);
+    expect(stalePlayer.snapshot.error?.code).toBe('engine-unavailable');
     await stalePlayer.stop();
 
     // A plugin that predates the engines report keeps the engine default.

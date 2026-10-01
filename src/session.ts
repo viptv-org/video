@@ -10,6 +10,7 @@ import {
   adapterRequest,
   asError,
   escalatePreparation,
+  failureRetryRequest,
   itemKind,
   isOriginalDelivery,
   playbackRequest,
@@ -145,10 +146,10 @@ export class PlaybackSessionController<
       const capabilities = await this.resolveCapabilities();
       if (operation !== this.operationGeneration) return this.cancelledResult();
       let request = playbackRequest(intent, capabilities, intent.position ?? 0);
-      // Delivery refusals (406) and network failures escalate the same selected
-      // source through the shared delivery ladder before giving up, so one
-      // transport or inspection refusal cannot strand a source the server can
-      // still deliver.
+      // A delivery refusal (406) escalates the same selected source through
+      // the shared delivery ladder (at most two rungs) before giving up, so
+      // one inspection refusal cannot strand a source the server can still
+      // deliver. Transport failures (status 0) are surfaced, never converted.
       for (let attempt = 0; ; attempt += 1) {
         try {
           return await this.transition(intent, request, this.current, () => operation === this.operationGeneration);
@@ -182,7 +183,7 @@ export class PlaybackSessionController<
     const active = this.current;
     if (!active || snapshot.sessionId !== this.activePlayerSessionId) return true;
     const recovery = recoveryRequest(active.session, active.request, snapshot.error.code);
-    const request = recovery ? { ...recovery, ...snapshot.error.selection, ...(snapshot.error.reason ? { conversionReason: snapshot.error.reason } : {}) } : undefined;
+    const request = recovery ? failureRetryRequest(recovery, snapshot.error) : undefined;
     if (!request || this.recoveredSessions.has(active.session.id)) return false;
     this.recoveredSessions.add(active.session.id);
     this.cancelNext(false);
@@ -341,32 +342,42 @@ export class PlaybackSessionController<
       await this.options.backend.stopPlayback(session.id);
       return this.cancelledResult();
     }
+    // The backend session this transition still owns. It is cleared before
+    // each stop so a failure path never stops the same session twice, and
+    // once the candidate becomes current.
+    let owned: PlaybackSessionView | undefined = session;
+    const releaseOwned = async (): Promise<void> => {
+      const released = owned;
+      owned = undefined;
+      if (released) await this.options.backend.stopPlayback(released.id);
+    };
     try {
       for (;;) {
         try {
           await this.options.player.open(adapterRequest(session, itemKind(intent.item), request.position ?? 0, wasPaused));
           break;
         } catch (cause) {
-          const recovery = cause instanceof PlayerOperationError
-            ? recoveryRequest(session, request, cause.code)
-            : undefined;
+          if (!(cause instanceof PlayerOperationError)) throw cause;
+          const recovery = recoveryRequest(session, request, cause.code);
           if (!stillWanted() || !recovery) throw cause;
-          await this.options.backend.stopPlayback(session.id);
+          await releaseOwned();
           if (!stillWanted()) throw new DOMException('Playback operation was cancelled.', 'AbortError');
-          request = { ...recovery, ...(cause instanceof PlayerOperationError ? cause.selection : {}), ...(cause instanceof PlayerOperationError && cause.reason ? { conversionReason: cause.reason } : {}) };
+          request = failureRetryRequest(recovery, cause);
           session = await this.prepareSession(request, stillWanted);
+          owned = session;
           if (!stillWanted()) throw new DOMException('Playback operation was cancelled.', 'AbortError');
         }
       }
       const candidate: PlaybackControllerActive<Item, Source> = { intent, request, session };
       if (!stillWanted()) {
-        await this.options.backend.stopPlayback(session.id);
+        await releaseOwned();
         if (restoreOnCancellation()) {
           await this.restore(previous, previousPosition, wasPaused, restoreOnCancellation);
         }
         return this.cancelledResult();
       }
       this.current = candidate;
+      owned = undefined;
       this.activePlayerSessionId = this.options.player.snapshot.sessionId;
       // A cleanup failure leaks a backend session but must never undo a
       // candidate already proven playable on the device.
@@ -375,10 +386,7 @@ export class PlaybackSessionController<
       return candidate;
     } catch (cause) {
       const error = asError(cause);
-      // `session` is undefined only when the backend answered with no session
-      // and the original failure already propagated; do not mask it with a
-      // TypeError while trying to clean up.
-      if (session!) await this.options.backend.stopPlayback(session!.id).catch(() => undefined);
+      await releaseOwned().catch(() => undefined);
       const shouldRestore = () => stillWanted() || restoreOnCancellation();
       if (shouldRestore()) {
         try {
