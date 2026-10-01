@@ -328,6 +328,19 @@ it('coalesces rapid managed seeks so a superseded replacement never holds provid
     expect(backend.stopPlayback).toHaveBeenCalledWith('direct');
   });
 
+  it('surfaces a missing playback engine without requesting another delivery', async () => {
+    const player = new FakePlayer();
+    vi.spyOn(player, 'open').mockRejectedValueOnce(new PlayerOperationError('engine-unavailable', 'The mpv engine is not available in this desktop build.'));
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValueOnce(session('direct', '/direct.mp4', 'direct')),
+      stopPlayback: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities });
+    await expect(controller.start({ item, source })).rejects.toMatchObject({ code: 'engine-unavailable' });
+    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
+    expect(backend.stopPlayback).toHaveBeenCalledWith('direct');
+  });
+
   it('uses full transcode only after direct and managed delivery cannot decode', async () => {
     const player = new FakePlayer();
     vi.spyOn(player, 'open')

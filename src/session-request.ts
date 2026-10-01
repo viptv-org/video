@@ -98,7 +98,9 @@ export function recoveryRequest(
   // A control-API outage or a failure of managed delivery never takes this path.
   if ((code === 'connection-failed' || code === 'authorization-unsupported') && isOriginalDelivery(session) && !request.managedOnly)
     return { ...request, managedOnly: true };
-  if (!canChangeMediaPath({ code })) return undefined;
+  // A missing engine (no AVPlay, no native plugin or engine, protocol
+  // mismatch) is a host fact: no other delivery or conversion can fix it.
+  if (code === 'engine-unavailable' || !canChangeMediaPath({ code })) return undefined;
   if (isOriginalDelivery(session) && !request.managedOnly)
     return { ...request, managedOnly: true };
   if (!isOriginalDelivery(session) && !request.forceTranscode)

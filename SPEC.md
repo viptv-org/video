@@ -110,6 +110,8 @@ One selected source escalates only through the server delivery ladder:
   `canChangeMediaPath` holds for the failure: direct → `managedOnly`, managed →
   `forceTranscode`. A late failure recovers at most once per backend session,
   at the absolute position and paused state (live reopens at the edge).
+  `engine-unavailable` never changes delivery: a missing engine is a host
+  fact that no other rung can fix.
 - **Gateway proxy retry.** A direct delivery that fails with
   `connection-failed` or `authorization-unsupported` gets exactly one
   `managedOnly` attempt through an authorized gateway, without forcing
