@@ -1,5 +1,60 @@
 # Validation
 
+## Native direct source headers — 2026-09-29
+
+Typecheck, 111 tests and build passed. Direct deliveries preserve arbitrary
+required source headers through the Tauri IPC boundary, with Cookie/User-Agent
+mapped to native properties. Invalid or conflicting values fail before replacing
+an active native session, without exposing values. Browser and AVPlay transports
+reject unsupported headers explicitly; the controller may request authorized
+gateway proxy delivery once, without forcing encoding. Native authorization,
+connection and missing-source failures retain distinct player codes. These are
+adapter/controller tests; real Linux engine evidence is in the plugin's
+VALIDATION.md. Windows/physical TV qualification remains pending.
+
+## Backend admission cancellation — 2026-09-29
+
+Controller generations now abort obsolete pending backend admissions through an
+optional request signal. Stop, replacement and next-episode cancellation retain
+the existing late-result release/rollback checks for ports that ignore signals.
+106 tests, typechecking and build passed, including stop-before-admission-response
+and preventing a late stop acknowledgement from overwriting a newer playback.
+The application transport owns bounded remote cleanup; the controller does not
+log or process media credentials. Consumer integration is recorded in TV-web.
+Direct media connection failures may try one authorized gateway delivery without
+forcing encoding (for example browser CORS). A control-API outage or a managed
+media connection failure never triggers conversion. Unit coverage distinguishes
+these paths; provider/device network qualification remains separate.
+
+## BE-002 gateway delivery preparation — 2026-09-29
+
+`npm run check` passed typechecking and all 103 tests; `npm run build` passed.
+
+The headless controller distinguishes v2 delivery kind from gateway processing
+mode, so a gateway's `mode: direct` cannot turn its rolling output into a native
+original-file timeline. Native direct capability no longer prohibits an
+authorized gateway fallback; authorization/capacity/network failures still do
+not trigger conversion. HTTP source URLs remain usable by native consumers.
+
+Fetch-based media requests accept an explicitly selected external HTTPS gateway
+and base path, constrain dependent resources to its origin/session directory,
+reject redirects, and omit cookies, Authorization and Referer. HLS uses the real
+FetchLoader with the same fence. Native browser HLS sets anonymous cross-origin
+mode; its nested requests remain browser-owned, so this is not a claim that
+JavaScript intercepts native-HLS redirects. Backend/gateway URL validation and
+rewriting remain mandatory. Physical TV/native transport acceptance is pending.
+
+The targeted trusted-HTTPS Chromium harness `tests/browser/gateway-check.mjs`
+decoded generated 640x360 HLS through a separate loopback HTTPS origin/base path,
+including a child playlist and segments. Seven observed requests carried no
+cookies, Authorization or Referer; a redirect was rejected without reaching its
+destination, and Range survived. No real provider or production service was
+contacted. Start the existing browser server with local TLS certificate envs,
+then run the harness with MEDIA_FIXTURES pointing to generated variant.m3u8 and
+segmentN.ts files. This does not prove full client v2 lifecycle adoption.
+
+Historical checkpoints follow.
+
 Validated from commit `6735a0b` plus the stage-4 consolidation on 2026-09-17.
 
 | Command | Result |

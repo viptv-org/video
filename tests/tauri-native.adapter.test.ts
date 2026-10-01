@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TAURI_VIDEO_PROTOCOL_VERSION, TauriNativeAdapter } from '../src/tauri-native';
+import { nativeOperationError } from '../src/tauri-native/wire';
 import { baseSnapshot, createAdapter, FakeTauriVideoPlugin, last } from './tauri-native-fake';
 
 afterEach(() => {
@@ -8,6 +9,27 @@ afterEach(() => {
 });
 
 describe('TauriNativeAdapter', () => {
+  it('preserves typed native source failures instead of treating them all as decode refusals', () => {
+    for (const [wire, expected] of [
+      ['AUTHORIZATION_FAILED', 'authorization-failed'],
+      ['CONNECTION_FAILED', 'connection-failed'],
+      ['SOURCE_UNAVAILABLE', 'expired-source'],
+    ]) {
+      expect(nativeOperationError({ code: wire, message: 'Safe source failure.' }, 'unsupported-format', 'Fallback')).toMatchObject({ code: expected });
+    }
+  });
+
+  it('rejects invalid source headers before replacing the active native session', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod' });
+    await expect(player.open({ url: 'https://backend.example/media/other.mp4', kind: 'vod', authorization: { headers: { Authorization: 'secret\r\nInjected: yes' } } })).rejects.toMatchObject({ code: 'authorization-failed' });
+    expect(plugin.openedPayloads).toHaveLength(1);
+    expect(plugin.closedKeys).toHaveLength(0);
+    expect(player.snapshot.state).toBe('playing');
+    await player.stop();
+  });
+
   it('verifies the protocol, opens the exact selected source, and reports engine tracks', async () => {
     const plugin = new FakeTauriVideoPlugin();
     const { player, anchor } = createAdapter(plugin);
@@ -177,10 +199,10 @@ describe('TauriNativeAdapter', () => {
     await player.open({
       url: 'https://backend.example/media/protected.mp4',
       kind: 'vod',
-      authorization: { cookie: 'session=signed', userAgent: 'VIPTV/1' },
+      authorization: { cookie: 'session=signed', userAgent: 'VIPTV/1', headers: { Referer: 'https://provider.example/watch', Authorization: 'Bearer source-token', Cookie: 'session=signed' } },
     });
 
-    expect(plugin.openedPayloads[0]).toMatchObject({ cookies: 'session=signed', userAgent: 'VIPTV/1' });
+    expect(plugin.openedPayloads[0]).toMatchObject({ cookies: 'session=signed', userAgent: 'VIPTV/1', headers: { Referer: 'https://provider.example/watch', Authorization: 'Bearer source-token' } });
     await player.stop();
   });
 
@@ -259,21 +281,23 @@ describe('TauriNativeAdapter', () => {
     expect(explicit.openedPayloads[0].backend).toBe('gstreamer');
     await explicitPlayer.stop();
 
-    // 'auto' follows the plugin's documented preference order.
+    // 'auto' follows the plugin's documented preference order: the first
+    // compiled engine, which the plugin lists GStreamer-first.
     const auto = new FakeTauriVideoPlugin();
-    auto.diagnostics = { ...auto.diagnostics, engines: ['mpv', 'gstreamer'] };
+    auto.diagnostics = { ...auto.diagnostics, engines: ['gstreamer', 'mpv'] };
     const autoPlayer = createAdapter(auto).player;
     await autoPlayer.open({ url, kind: 'vod' });
-    expect(auto.openedPayloads[0].backend).toBe('mpv');
+    expect(auto.openedPayloads[0].backend).toBe('gstreamer');
     await autoPlayer.stop();
 
-    // An engine the build did not compile is not requested at all, so a
-    // stale persisted choice cannot fail every open.
+    // An explicit engine the build did not compile fails with a typed error
+    // before native_open; it never silently plays on another engine.
     const stale = new FakeTauriVideoPlugin();
     stale.diagnostics = { ...stale.diagnostics, engines: ['gstreamer'] };
     const stalePlayer = createAdapter(stale, { engine: 'mpv' }).player;
-    await stalePlayer.open({ url, kind: 'vod' });
-    expect('backend' in stale.openedPayloads[0]).toBe(false);
+    await expect(stalePlayer.open({ url, kind: 'vod' })).rejects.toMatchObject({ code: 'engine-unavailable' });
+    expect(stale.openedPayloads).toHaveLength(0);
+    expect(stalePlayer.snapshot.error?.code).toBe('engine-unavailable');
     await stalePlayer.stop();
 
     // A plugin that predates the engines report keeps the engine default.

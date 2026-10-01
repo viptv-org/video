@@ -2,14 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VizioHtml5Adapter } from '../src/vizio-html5';
 import type { HtmlMediaLike } from '../src/vizio-html5';
 
-const hls = vi.hoisted(() => ({ supported: true, instances: [] as Array<{ config: { xhrSetup: (xhr: unknown, url: string) => void }; destroy: ReturnType<typeof vi.fn>; loadSource: ReturnType<typeof vi.fn>; listeners: Record<string, (event: string, data: { fatal: boolean; type: string; response?: { code: number } }) => void> }> }));
-vi.mock('hls.js', () => ({ default: class {
+const hls = vi.hoisted(() => ({ supported: true, instances: [] as Array<{ config: { fetchSetup: (context: { url: string }, init?: RequestInit) => Request }; destroy: ReturnType<typeof vi.fn>; loadSource: ReturnType<typeof vi.fn>; listeners: Record<string, (event: string, data: { fatal: boolean; type: string; response?: { code: number } }) => void> }> }));
+vi.mock('hls.js', () => ({ FetchLoader: class {}, default: class {
   static isSupported = () => hls.supported;
   static Events = { ERROR: 'error' };
   static ErrorTypes = { NETWORK_ERROR: 'network' };
   destroy = vi.fn(); loadSource = vi.fn(); attachMedia = vi.fn();
   listeners: Record<string, (event: string, data: { fatal: boolean; type: string; response?: { code: number } }) => void> = {};
-  constructor(readonly config: { xhrSetup: (xhr: unknown, url: string) => void }) { hls.instances.push(this); }
+  constructor(readonly config: { fetchSetup: (context: { url: string }, init?: RequestInit) => Request }) { hls.instances.push(this); }
   on(event: string, callback: (event: string, data: { fatal: boolean; type: string; response?: { code: number } }) => void) { this.listeners[event] = callback; }
 } }));
 class Media implements HtmlMediaLike {
@@ -71,14 +71,17 @@ describe('HTML HLS delivery', () => {
     await expect(player.open({ url: url(), kind: 'vod' })).rejects.toMatchObject({ code: 'unsupported-format' });
     expect(media.load).not.toHaveBeenCalled();
   });
-  it('rejects external manifests and external or other-session subresources', async () => {
+  it('accepts a selected external gateway but rejects other-origin and other-session resources', async () => {
     const media = new Media(); const player = new VizioHtml5Adapter(media);
-    await expect(player.open({ url: 'https://upstream.invalid/index.m3u8', kind: 'vod' })).rejects.toMatchObject({ code: 'authorization-unsupported' });
-    const opening = player.open({ url: url(), kind: 'vod', paused: true });
-    const setup = hls.instances[0].config.xhrSetup;
-    expect(() => setup(null, `${window.location.origin}/media/session/cap/seg.ts`)).not.toThrow();
-    expect(() => setup(null, 'https://upstream.invalid/seg.ts')).toThrow();
-    expect(() => setup(null, `${window.location.origin}/media/other/cap/seg.ts`)).toThrow();
+    const delivery = 'https://gateway.example/base/media/session/cap/index.m3u8';
+    const opening = player.open({ url: delivery, kind: 'vod', paused: true });
+    const setup = hls.instances[0].config.fetchSetup;
+    const request = setup({ url: 'https://gateway.example/base/media/session/cap/seg.ts' }, { headers: { Authorization: 'secret' } });
+    expect(request.credentials).toBe('omit');
+    expect(request.redirect).toBe('error');
+    expect(request.headers.get('authorization')).toBeNull();
+    expect(() => setup({ url: 'https://upstream.invalid/seg.ts' })).toThrow();
+    expect(() => setup({ url: 'https://gateway.example/base/media/other/cap/seg.ts' })).toThrow();
     media.emit('loadedmetadata'); await opening; await player.dispose();
   });
   it('surfaces an explicit HLS media refusal immediately after playback starts', async () => {

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { checkedSourceAuthorization } from './source-authorization';
 import { SessionPlayer } from './session';
 import { NativeAperture, type NativeLayout } from './tauri-native/aperture';
 import { TAURI_NATIVE_PLAYER_CAPABILITIES } from './tauri-native/capabilities';
@@ -18,14 +19,13 @@ import {
   type PlayerErrorCode,
   type PlayerTime,
 } from './types';
+import { delay, nonNegative } from './primitives';
 import {
-  delay,
   engineDuration,
   hasEnded,
   nativeDiagnostics,
   nativeOperationError,
   newSessionKey,
-  nonNegative,
   sameLayout,
   selectedCodec,
   tracksFromNative,
@@ -70,7 +70,7 @@ export function resolveTauriVideoInvoker(): TauriVideoInvoker {
   return { invoke };
 }
 
-export function tauriNativePlatform(): NativeVideoPlatform | undefined {
+function tauriNativePlatform(): NativeVideoPlatform | undefined {
   if (/Windows/i.test(navigator.userAgent)) return 'windows';
   if (/Linux|X11/i.test(navigator.userAgent)) return 'linux';
   return undefined;
@@ -123,6 +123,7 @@ export class TauriNativeAdapter extends SessionPlayer {
   }
 
   async open(request: OpenPlayerRequest): Promise<void> {
+    const authorization = checkedSourceAuthorization(request.authorization);
     await this.teardownNative();
     this.invalidateSession();
     const sessionId = this.startSession(request.kind);
@@ -178,8 +179,9 @@ export class TauriNativeAdapter extends SessionPlayer {
         autoplay: texture !== undefined || this.requestedPlaying,
         volume: textureBootstrap ? 0 : this.volume,
         muted: this.muted,
-        ...(request.authorization?.cookie ? { cookies: request.authorization.cookie } : {}),
-        ...(request.authorization?.userAgent ? { userAgent: request.authorization.userAgent } : {}),
+        ...(authorization?.cookie ? { cookies: authorization.cookie } : {}),
+        ...(authorization?.userAgent ? { userAgent: authorization.userAgent } : {}),
+        ...(authorization?.headers ? { headers: authorization.headers } : {}),
         ...(backend !== undefined ? { backend } : {}),
       };
       const snapshot = await this.openNativeSession(sessionKey, payload, sessionId);
@@ -423,17 +425,21 @@ export class TauriNativeAdapter extends SessionPlayer {
 
   /**
    * Resolves the requested engine into the plugin's backend field. 'auto'
-   * follows the plugin's documented preference order; an explicit engine the
-   * diagnostics say is not compiled is not requested at all, so a stale
-   * persisted choice cannot fail every open while the running backend stays
-   * visible in diagnostics.
+   * follows the plugin's documented preference order (GStreamer first). An
+   * explicit engine the diagnostics say is not compiled fails here with a
+   * typed `engine-unavailable` error instead of silently playing on another
+   * engine; hosts offer only engines from `native_diagnostics`.
    */
   private resolveBackend(): string | undefined {
     const engines = this.nativeEngines;
     if (this.engine !== 'auto') {
-      return engines === undefined || engines.length === 0 || engines.includes(this.engine)
-        ? this.engine
-        : undefined;
+      if (engines !== undefined && engines.length > 0 && !engines.includes(this.engine)) {
+        throw new PlayerOperationError(
+          'engine-unavailable',
+          `The ${this.engine} engine is not available in this desktop build.`,
+        );
+      }
+      return this.engine;
     }
     return engines?.find(engine => engine.length > 0);
   }

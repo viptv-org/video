@@ -40,4 +40,8 @@ Linux the native surface renders under a DOM aperture the adapter keeps in
 sync; on Windows frames arrive as a WebView2 texture stream on the video
 element. The host's media and API requests route through
 `@tauri-apps/plugin-http` (`sessionMediaFetch` does this under
-`__TAURI_INTERNALS__`); playback is native with no server conversion.
+`__TAURI_INTERNALS__`). Playback is native-direct first; a direct source the
+engine cannot reach or authorize gets one authorized gateway attempt, and the
+shared delivery ladder still applies to 406 refusals and decoder failures.
+`engine: 'auto'` follows the plugin's order (GStreamer first); an explicit
+engine the build did not compile fails with `engine-unavailable`.

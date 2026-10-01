@@ -45,9 +45,13 @@ interface Player {
 `open` accepts an already-selected delivery URL with the server's timeline
 facts: `deliveryMode` ('direct' | 'managed'), `timelineOffsetSeconds`,
 `timelineDurationSeconds`, `adoptEngineDuration`, `startAtSeconds`, and an
-optional `authorization` (cookie/User-Agent) that adapters apply only when
-their engine supports it. Failures are typed `PlayerErrorCode` values; every
-operation outside a live session throws `invalid-state`.
+optional source `authorization` (`cookie`, `userAgent`, and arbitrary request
+`headers`, validated by `checkedSourceAuthorization`: at most 32 headers,
+token names, no control characters, no hop-by-hop names, no conflicting
+duplicates). Adapters apply only what their engine supports — Tauri forwards
+all three, Tizen AVPlay only cookie/User-Agent — and otherwise fail with
+`authorization-unsupported`. Failures are typed `PlayerErrorCode` values;
+every operation outside a live session throws `invalid-state`.
 
 ## Session controller
 
@@ -55,13 +59,18 @@ operation outside a live session throws `invalid-state`.
 const controller = new PlaybackSessionController({ player, backend, capabilities })
 ```
 
-`backend` is a structural port — `startPlayback(request: PlaybackStart):
-Promise<PlaybackSessionView>` and `stopPlayback(id: string): Promise<void>` —
-satisfied by the application's API client. Delivery refusals are `Error`s
-carrying an HTTP-like `status` (0 means transport failure). The controller
-escalates status 0/406 and decoder failures through the managed ladder,
-restores the outgoing session when a candidate cannot open, and coalesces
-rapid managed seeks.
+`backend` is a structural port — `startPlayback(request: PlaybackStart,
+options?: { signal?: AbortSignal }): Promise<PlaybackSessionView>` and
+`stopPlayback(id: string): Promise<void>` — satisfied by the application's API
+client. The controller aborts the `signal` when a newer operation supersedes a
+pending admission. Delivery refusals are `Error`s carrying an HTTP-like
+`status` (0 means transport failure). Only a delivery refusal (406) escalates
+through the ladder (original → `managedOnly` → `forceTranscode`, at most two
+rungs); status 0 and every other status surface unchanged. Decoder failures
+the device cannot present escalate the same way, a direct transport or
+header failure gets one authorized gateway attempt without conversion, the
+outgoing session is restored when a candidate cannot open, and rapid managed
+seeks are coalesced.
 
 ## Capability profiles
 

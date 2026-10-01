@@ -3,12 +3,12 @@ import type { PlaybackCapabilities } from './types';
 import { browserPlaybackPolicy } from './browser-policy';
 import { qualifiedVizioEvidence } from './vizio-evidence';
 
-export const BROWSER_CODECS = {
+const BROWSER_CODECS = {
   h264: 'video/mp4; codecs="avc1.640029"',
   hevc: 'video/mp4; codecs="hvc1.1.6.L150.B0"',
   aac: 'audio/mp4; codecs="mp4a.40.2"',
 } as const;
-export const HLS_MIME_TYPES = ['application/vnd.apple.mpegurl', 'application/x-mpegURL'] as const;
+const HLS_MIME_TYPES = ['application/vnd.apple.mpegurl', 'application/x-mpegURL'] as const;
 export interface BrowserProbeEnvironment {
   readonly media: { canPlayType(type: string): string };
   readonly decodingInfo?: (configuration: MediaDecodingConfiguration) => Promise<MediaCapabilitiesDecodingInfo>;
@@ -123,7 +123,7 @@ export async function probeBrowserPlaybackCapabilities(environment?: BrowserProb
 }
 
 /** Only used by the browser adapter that actually consumes WebCodecs via Mediabunny. */
-export async function probeWebCodecs(): Promise<{ h264: boolean; hevc: boolean; aac: boolean }> {
+async function probeWebCodecs(): Promise<{ h264: boolean; hevc: boolean; aac: boolean }> {
   if (!globalThis.isSecureContext || typeof VideoDecoder === 'undefined' || typeof AudioDecoder === 'undefined' || typeof AudioContext === 'undefined')
     return { h264: false, hevc: false, aac: false };
   const bounded = async (probe: () => Promise<{ supported?: boolean }>) => {
