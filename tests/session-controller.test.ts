@@ -44,6 +44,39 @@ function session(id: string, url: string, mode = 'managed', position = 0): Playb
 }
 
 describe('PlaybackSessionController', () => {
+  it('starts lease release while native stop is still pending', async () => {
+    const player = new FakePlayer();
+    let nativeStopped!: () => void;
+    vi.spyOn(player, 'stop').mockImplementation(() => new Promise<void>(resolve => { nativeStopped = resolve; }));
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValue(session('active', 'https://media/active')),
+      stopPlayback: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities });
+    await controller.start({ item, source });
+    const stopping = controller.stop();
+    try {
+      await vi.waitFor(() => expect(backend.stopPlayback).toHaveBeenCalledExactlyOnceWith('active'));
+      expect(controller.snapshot.state).not.toBe('stopped');
+    } finally {
+      nativeStopped();
+      await stopping;
+    }
+    expect(controller.snapshot.state).toBe('stopped');
+  });
+  it('releases the lease when native stop rejects and retains its failure', async () => {
+    const player = new FakePlayer();
+    const nativeFailure = new Error('Fixture native stop failed');
+    vi.spyOn(player, 'stop').mockRejectedValue(nativeFailure);
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValue(session('active', 'https://media/active')),
+      stopPlayback: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities });
+    await controller.start({ item, source });
+    await expect(controller.stop()).rejects.toBe(nativeFailure);
+    expect(backend.stopPlayback).toHaveBeenCalledExactlyOnceWith('active');
+  });
   it('does not let a late stop acknowledgement overwrite a newer playback', async () => {
     let release!: () => void;
     const player = new FakePlayer();

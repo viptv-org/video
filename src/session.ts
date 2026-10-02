@@ -313,8 +313,12 @@ export class PlaybackSessionController<
     const operation = this.nextOperation();
     const active = this.current;
     this.current = null;
-    await this.options.player.stop();
-    if (active) await this.options.backend.stopPlayback(active.session.id);
+    // A native decoder close can stall or fail. Begin lease release before
+    // waiting for it so shutdown does not strand a server reservation.
+    const releasing = active ? this.options.backend.stopPlayback(active.session.id) : Promise.resolve();
+    const stopped = await Promise.allSettled([this.options.player.stop(), releasing]);
+    const failed = stopped.find(result => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
     if (operation === this.operationGeneration) this.publish({ state: 'stopped', active: null, error: null });
   }
 
