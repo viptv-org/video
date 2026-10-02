@@ -88,3 +88,13 @@ establish browser, Tizen AVPlay, Vizio/webOS, codec, DRM, HDR, or physical-TV
 playback support; those need their target runtime or device. The Tauri native
 adapter's IPC surface was verified live on Linux in stage 3 (see tv-web
 `TESTING.md`).
+# Concurrent stop cleanup — 2026-10-02
+
+The real `PlaybackSessionController.stop` seam reproduced two failures:
+withheld native stop prevented any backend lease release, and rejected native
+stop skipped release entirely. Both regressions fail on `0eb875b` and pass when
+lease release begins concurrently with native stop. Completion awaits both
+settlements and preserves failure propagation and operation-generation fencing.
+All 123 tests and type checks pass. Integrated native window/audio/child-process
+exit and actual backend DELETE remain desktop-host qualification at its exact
+adopted revisions; this unit proof does not certify them.

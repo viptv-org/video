@@ -145,6 +145,11 @@ capacity. A cancelled operation resolves to the current owner or rejects with
 an `AbortError`. Back during `prepareNext` restores the outgoing session if the
 device already switched.
 
+Stopping starts backend lease release without waiting for decoder close. Both
+cleanup operations settle before completion, and failures still propagate.
+A native close stall must not prevent the lease release request from starting;
+the platform host owns any bounded process-exit fallback.
+
 ## Media gateway fetch fence
 
 All JavaScript-fetched media (MediaBunny inputs, hls.js loads, subtitle and
