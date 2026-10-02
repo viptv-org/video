@@ -216,6 +216,8 @@ export interface Player {
   readonly snapshot: PlayerSnapshot;
   setVolume?(level: number): Promise<void>;
   setMuted?(muted: boolean): Promise<void>;
+  /** Native surfaces use this presentation command; DOM surfaces use host CSS. */
+  setPictureMode?(mode: 'fit' | 'fill'): Promise<void>;
   open(request: OpenPlayerRequest): Promise<void>;
   play(): Promise<void>;
   pause(): Promise<void>;

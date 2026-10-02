@@ -234,3 +234,12 @@ dimensions only.
 `npm run check` (typecheck + unit tests) and `npm run build`. Platform adapter
 changes need browser, TV device or Tauri host evidence; capability claims stay
 scoped to the tested runtime.
+
+## Native picture presentation
+
+The optional `Player.setPictureMode('fit' | 'fill')` command lets a host project
+its local picture-mode choice onto a native surface. The Tauri adapter maps it
+to the plugin's existing `fit`/`crop` commands and reapplies Fill after source
+replacement. DOM adapters retain the host's CSS presentation. The application
+owns the mode's UI state and resetting it for a new title. The command does not
+request or replace a backend playback lease.
