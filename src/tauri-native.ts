@@ -191,7 +191,11 @@ export class TauriNativeAdapter extends SessionPlayer {
       established = true;
       this.sessionKey = sessionKey;
       this.native = snapshot;
-      if (this.pictureMode === 'fill') this.acceptSnapshot(await this.control('crop'));
+      if (this.pictureMode === 'fill') {
+        const cropped = await this.control('crop');
+        if (!this.isCurrent(sessionId) || this.sessionKey !== sessionKey) return;
+        this.acceptSnapshot(cropped);
+      }
 
       // The engine reports which backend actually serves the session; surface
       // it in diagnostics so a host shows the running engine, not just the

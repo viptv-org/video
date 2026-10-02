@@ -161,6 +161,30 @@ describe('TauriNativeAdapter', () => {
     await player.stop();
   });
 
+  for (const interrupt of ['stop', 'replacement'] as const) {
+    it(`discards an old Fill-open acknowledgment after ${interrupt}`, async () => {
+      const plugin = new FakeTauriVideoPlugin();
+      const { player } = createAdapter(plugin);
+      let entered!: () => void;
+      let release!: () => void;
+      const reached = new Promise<void>(resolve => { entered = resolve; });
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      plugin.cropDelay = { entered, pending };
+      await player.setPictureMode('fill');
+      const oldOpen = player.open({ url: 'https://backend.example/media/old.mp4', kind: 'vod', startAtSeconds: 30 });
+      await reached;
+      if (interrupt === 'stop') await player.stop();
+      else await player.open({ url: 'https://backend.example/media/new.mp4', kind: 'vod' });
+      const key = last(plugin.openedPayloads).sessionKey;
+      release();
+      await oldOpen;
+      expect(plugin.controls.filter(control => control.action === 'seek' && control.sessionKey === key)).toEqual([]);
+      expect(player.snapshot.state).toBe(interrupt === 'stop' ? 'stopped' : 'playing');
+      expect(player.snapshot.time.positionSeconds).toBe(0);
+      await player.stop();
+    });
+  }
+
   it('abandons seek confirmation when the native session stops', async () => {
     const plugin = new FakeTauriVideoPlugin();
     const { player } = createAdapter(plugin);
