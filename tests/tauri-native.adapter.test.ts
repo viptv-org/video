@@ -146,6 +146,70 @@ describe('TauriNativeAdapter', () => {
     await player.stop();
   });
 
+  it('sends native picture modes without opening a new playback and reapplies Fill on source replacement', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod' });
+    await player.setPictureMode('fill');
+    expect(last(plugin.controls)).toMatchObject({ action: 'crop' });
+    expect(plugin.openedPayloads).toHaveLength(1);
+    await player.setPictureMode('fit');
+    expect(last(plugin.controls)).toMatchObject({ action: 'fit' });
+    await player.setPictureMode('fill');
+    await player.open({ url: 'https://backend.example/media/other.mp4', kind: 'vod' });
+    expect(last(plugin.controls)).toMatchObject({ action: 'crop' });
+    await player.stop();
+  });
+
+  for (const interrupt of ['stop', 'replacement'] as const) {
+    it(`discards an old Fill-open acknowledgment after ${interrupt}`, async () => {
+      const plugin = new FakeTauriVideoPlugin();
+      const { player } = createAdapter(plugin);
+      let entered!: () => void;
+      let release!: () => void;
+      const reached = new Promise<void>(resolve => { entered = resolve; });
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      plugin.cropDelay = { entered, pending };
+      await player.setPictureMode('fill');
+      const oldOpen = player.open({ url: 'https://backend.example/media/old.mp4', kind: 'vod', startAtSeconds: 30 });
+      await reached;
+      if (interrupt === 'stop') await player.stop();
+      else await player.open({ url: 'https://backend.example/media/new.mp4', kind: 'vod' });
+      const key = last(plugin.openedPayloads).sessionKey;
+      release();
+      await oldOpen;
+      expect(plugin.controls.filter(control => control.action === 'seek' && control.sessionKey === key)).toEqual([]);
+      expect(player.snapshot.state).toBe(interrupt === 'stop' ? 'stopped' : 'playing');
+      expect(player.snapshot.time.positionSeconds).toBe(0);
+      await player.stop();
+    });
+  }
+
+  it('abandons seek confirmation when the native session stops', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod', startAtSeconds: 30 });
+    plugin.seekAcknowledgesAtZero = true;
+    const pending = player.seek(90);
+    await Promise.resolve();
+    await player.stop();
+    await pending;
+    expect(player.snapshot.state).toBe('stopped');
+    expect(player.snapshot.time.positionSeconds).toBe(0);
+  });
+
+  it('confirms a flushing seek before interpreting a transient zero acknowledgment as a replay', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod', startAtSeconds: 30 });
+    plugin.seekAcknowledgesAtZero = true;
+
+    await expect(player.seek(90)).resolves.toBeUndefined();
+    expect(player.snapshot.time.positionSeconds).toBe(90);
+    expect(player.snapshot.error).toBeNull();
+    await player.stop();
+  });
+
   it('reports an honest failure when the origin replays the beginning instead of landing the seek', async () => {
     const plugin = new FakeTauriVideoPlugin();
     const { player } = createAdapter(plugin);

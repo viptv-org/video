@@ -92,6 +92,8 @@ export class TauriNativeAdapter extends SessionPlayer {
   private request?: OpenPlayerRequest;
   private sessionKey?: string;
   private native?: NativeVideoSnapshot;
+  private seekGeneration = 0;
+  private pictureMode: 'fit' | 'fill' = 'fit';
   private requestedPlaying = false;
   private protocolVerified = false;
   private volume = 1;
@@ -189,6 +191,11 @@ export class TauriNativeAdapter extends SessionPlayer {
       established = true;
       this.sessionKey = sessionKey;
       this.native = snapshot;
+      if (this.pictureMode === 'fill') {
+        const cropped = await this.control('crop');
+        if (!this.isCurrent(sessionId) || this.sessionKey !== sessionKey) return;
+        this.acceptSnapshot(cropped);
+      }
 
       // The engine reports which backend actually serves the session; surface
       // it in diagnostics so a host shows the running engine, not just the
@@ -301,15 +308,28 @@ export class TauriNativeAdapter extends SessionPlayer {
       }
     }
     const before = native?.currentTimeSeconds ?? 0;
+    const generation = ++this.seekGeneration;
+    const sessionKey = this.sessionKey;
     // A lying origin answers the seek's range request by replaying the
     // stream from the beginning: the position lands far below both the
     // target and the pre-seek position instead of near the target.
     const restartToleranceSeconds = 2;
     try {
-      const snapshot = this.acceptSnapshot(await this.control('seek', target));
-      if (!this.isCurrent(sessionId)) return;
-      const landed = snapshot.currentTimeSeconds;
-      if (landed + restartToleranceSeconds < target && landed + restartToleranceSeconds < before) {
+      let snapshot = await this.control('seek', target);
+      const current = () => this.isCurrent(sessionId) && this.sessionKey === sessionKey && this.seekGeneration === generation;
+      if (!current()) return;
+      const replayed = () => snapshot.currentTimeSeconds + restartToleranceSeconds < target
+        && snapshot.currentTimeSeconds + restartToleranceSeconds < before;
+      // Flushing decoders can acknowledge at zero before asynchronous seek
+      // completion. Confirm with bounded engine observations before reporting
+      // that the origin replayed the beginning. No position is fabricated.
+      for (let attempt = 0; replayed() && attempt < 20; attempt++) {
+        await delay(50);
+        if (!current()) return;
+        snapshot = await this.invoker.invoke<NativeVideoSnapshot>(`${COMMAND}native_stats`, { payload: { sessionKey } });
+        if (!current()) return;
+      }
+      if (replayed()) {
         // The engine restarted the stream instead of landing the seek; it
         // is still playing, so this reaches the caller without failing the
         // session.
@@ -318,10 +338,25 @@ export class TauriNativeAdapter extends SessionPlayer {
           'The stream replayed from its beginning instead of seeking; the origin cannot serve that position.',
         );
       }
+      this.acceptSnapshot(snapshot);
       this.publishSnapshot(sessionId, snapshot);
     } catch (cause) {
       if (cause instanceof PlayerOperationError) throw cause;
       this.throwOperation(sessionId, 'seek-failed', 'The native engine could not seek the selected source.', cause);
+    }
+  }
+
+  async setPictureMode(mode: 'fit' | 'fill'): Promise<void> {
+    this.pictureMode = mode;
+    if (this.sessionKey === undefined) return;
+    const sessionId = this.snapshot.sessionId;
+    try {
+      const snapshot = await this.control(mode === 'fill' ? 'crop' : 'fit');
+      if (!this.isCurrent(sessionId)) return;
+      this.acceptSnapshot(snapshot);
+      this.publishSnapshot(sessionId, snapshot);
+    } catch (cause) {
+      throw nativeOperationError(cause, 'unsupported-operation', 'The native engine could not change the picture mode.');
     }
   }
 

@@ -5,6 +5,9 @@ Release numbering follows the
 
 ## Unreleased
 
+- Confirm transient native seek acknowledgments against bounded engine stats before reporting an origin replay.
+- Add optional `Player.setPictureMode` for native Fit/Fill presentation, retaining Fill across source replacement.
+
 - Classify HLS segments by their bytes in the session media fetch: a
   disguise prefix (fake PNG/JPEG/GIF header or other junk) before the first
   MPEG-TS packet run is removed, later byte ranges of that segment are shifted

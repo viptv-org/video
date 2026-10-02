@@ -46,6 +46,7 @@ export class FakeTauriVideoPlugin {
   /** Per-attempt open errors, consumed front-first; the persistent openError applies after the queue empties. */
   openErrorQueue: unknown[] = [];
   controlError: unknown;
+  cropDelay?: { entered(): void; pending: Promise<void> };
   statsSnapshot: NativeVideoSnapshot | undefined;
   statsError: unknown;
   readonly openedPayloads: Array<Record<string, unknown>> = [];
@@ -59,6 +60,8 @@ export class FakeTauriVideoPlugin {
   readonly commands: string[] = [];
   /** When set, the engine answers seeks by replaying from ~0: an origin that cannot serve range requests. */
   seekReplaysFromBeginning = false;
+  /** A flushing seek acknowledges before its first decoded position is available. */
+  seekAcknowledgesAtZero = false;
 
   async invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
     this.commands.push(command);
@@ -78,7 +81,15 @@ export class FakeTauriVideoPlugin {
       this.controls.push(payload);
       if (this.controlError) throw this.controlError;
       this.#apply(payload.action, payload.value, payload.index);
-      return this.#snapshot() as T;
+      const snapshot = payload.action === 'seek' && this.seekAcknowledgesAtZero
+        ? { ...this.#snapshot(), currentTimeSeconds: 0 } : this.#snapshot();
+      if (payload.action === 'crop' && this.cropDelay) {
+        const delay = this.cropDelay;
+        this.cropDelay = undefined;
+        delay.entered();
+        await delay.pending;
+      }
+      return snapshot as T;
     }
     if (command === 'plugin:video|native_stats') {
       if (this.statsError) throw this.statsError;

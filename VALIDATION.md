@@ -1,5 +1,24 @@
 # Validation
 
+## Native seek confirmation and picture-mode command — 2026-10-02
+
+A real Linux desktop source-picker run admitted generated header-protected
+H.264/AAC media through an authenticated backend direct lease. GStreamer
+advanced its position and issued an authorized byte-range seek, while the
+adapter incorrectly reported that the origin replayed the beginning. Native
+flush-seek acknowledgments may temporarily report zero before later statistics
+show the decoded target.
+
+The focused regression rejected before the change and resolves after bounded
+engine-stat confirmation. Actual origin replays remain operation failures; stop
+or a superseding seek cancels confirmation. `npm run check` passes typechecking
+and 119 tests, including confirmation, cancellation and native picture commands;
+`npm run build` passes. These are adapter tests. The desktop consumer must adopt
+this revision and invoke `setPictureMode` before native Fit/Fill UI is qualified.
+The GStreamer plugin's crop implementation and installed-device checks are
+separate. No production service, real provider, installer publication or Windows
+qualification was used.
+
 ## Native direct source headers — 2026-09-29
 
 Typecheck, 111 tests and build passed. Direct deliveries preserve arbitrary
