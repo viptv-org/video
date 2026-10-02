@@ -150,6 +150,12 @@ cleanup operations settle before completion, and failures still propagate.
 A native close stall must not prevent the lease release request from starting;
 the platform host owns any bounded process-exit fallback.
 
+A native host that shares HTTP IPC with its decoder UI thread calls
+`stop({ releaseBeforePlayer: true })` on application exit. That order settles
+lease release before native close, still closes on release failure and preserves
+failure propagation. A newer operation prevents a delayed exit-stop from closing
+the new player session. Ordinary playback stops keep concurrent cleanup.
+
 ## Media gateway fetch fence
 
 All JavaScript-fetched media (MediaBunny inputs, hls.js loads, subtitle and

@@ -98,3 +98,13 @@ settlements and preserves failure propagation and operation-generation fencing.
 All 123 tests and type checks pass. Integrated native window/audio/child-process
 exit and actual backend DELETE remain desktop-host qualification at its exact
 adopted revisions; this unit proof does not certify them.
+# Native exit release order — 2026-10-02
+
+Actual GTK fault injection showed that concurrent JavaScript requests cannot
+guarantee HTTP dispatch before a native close blocks the shared UI thread.
+The explicit `releaseBeforePlayer` stop option settles the backend release
+before calling native close. New real-controller regressions verify that order,
+preserve a newer player after delayed release, and close after release rejection.
+The first two fail on `b1818f9`; all 126 tests, type checks and package build pass.
+Actual DELETE-before-blocked-GTK and bounded process/audio teardown remain the
+desktop host's integrated qualification; this library owns no process watchdog.

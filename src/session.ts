@@ -307,7 +307,7 @@ export class PlaybackSessionController<
     }
   }
 
-  async stop(): Promise<void> {
+  async stop(options: { releaseBeforePlayer?: boolean } = {}): Promise<void> {
     this.recoveredSessions.clear();
     this.cancelNext(false);
     const operation = this.nextOperation();
@@ -316,8 +316,13 @@ export class PlaybackSessionController<
     // A native decoder close can stall or fail. Begin lease release before
     // waiting for it so shutdown does not strand a server reservation.
     const releasing = active ? this.options.backend.stopPlayback(active.session.id) : Promise.resolve();
-    const stopped = await Promise.allSettled([this.options.player.stop(), releasing]);
-    const failed = stopped.find(result => result.status === 'rejected');
+    // Native HTTP IPC may share the decoder's UI thread. Application exit
+    // must finish that release while the thread can still dispatch replies.
+    const released = options.releaseBeforePlayer ? await Promise.allSettled([releasing]) : [];
+    const nativeStop = !options.releaseBeforePlayer || operation === this.operationGeneration
+      ? this.options.player.stop() : Promise.resolve();
+    const stopped = await Promise.allSettled([nativeStop, ...(options.releaseBeforePlayer ? [] : [releasing])]);
+    const failed = [...stopped, ...released].find(result => result.status === 'rejected');
     if (failed?.status === 'rejected') throw failed.reason;
     if (operation === this.operationGeneration) this.publish({ state: 'stopped', active: null, error: null });
   }

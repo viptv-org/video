@@ -44,6 +44,57 @@ function session(id: string, url: string, mode = 'managed', position = 0): Playb
 }
 
 describe('PlaybackSessionController', () => {
+  it('finishes lease release before native close when the host is shutting down', async () => {
+    const player = new FakePlayer();
+    const nativeStop = vi.spyOn(player, 'stop');
+    let release!: () => void;
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValue(session('active', 'https://media/active')),
+      stopPlayback: vi.fn(() => new Promise<void>(resolve => { release = resolve; })),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities });
+    await controller.start({ item, source });
+    const stopping = controller.stop({ releaseBeforePlayer: true });
+    try {
+      expect(backend.stopPlayback).toHaveBeenCalledExactlyOnceWith('active');
+      expect(nativeStop).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await stopping;
+    }
+    expect(nativeStop).toHaveBeenCalledOnce();
+  });
+  it('does not let delayed shutdown lease release stop a newer player session', async () => {
+    const player = new FakePlayer();
+    const nativeStop = vi.spyOn(player, 'stop');
+    let release!: () => void;
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValueOnce(session('old', 'https://media/old')).mockResolvedValueOnce(session('new', 'https://media/new')),
+      stopPlayback: vi.fn(() => new Promise<void>(resolve => { release = resolve; })),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities });
+    await controller.start({ item, source });
+    const stopping = controller.stop({ releaseBeforePlayer: true });
+    await controller.start({ item, source });
+    release();
+    await stopping;
+    expect(nativeStop).not.toHaveBeenCalled();
+    expect(controller.snapshot.active?.session.id).toBe('new');
+    expect(controller.snapshot.state).toBe('playing');
+  });
+  it('still closes the player when shutdown lease release rejects', async () => {
+    const player = new FakePlayer();
+    const nativeStop = vi.spyOn(player, 'stop');
+    const releaseFailure = new Error('Fixture lease release failed');
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValue(session('active', 'https://media/active')),
+      stopPlayback: vi.fn().mockRejectedValue(releaseFailure),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities });
+    await controller.start({ item, source });
+    await expect(controller.stop({ releaseBeforePlayer: true })).rejects.toBe(releaseFailure);
+    expect(nativeStop).toHaveBeenCalledOnce();
+  });
   it('starts lease release while native stop is still pending', async () => {
     const player = new FakePlayer();
     let nativeStopped!: () => void;
