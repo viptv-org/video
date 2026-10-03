@@ -9,6 +9,53 @@ afterEach(() => {
 });
 
 describe('TauriNativeAdapter', () => {
+  it("returns to playing after pause and resume facts arrive through polling", async () => {
+    vi.useFakeTimers();
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: "https://backend.example/file.mp4", kind: "vod" });
+    plugin.statsSnapshot = baseSnapshot({ playing: false });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(player.snapshot.state).toBe("paused");
+    plugin.statsSnapshot = baseSnapshot({
+      playing: true,
+      currentTimeSeconds: 30,
+    });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(player.snapshot.state).toBe("playing");
+    expect(player.snapshot.time.positionSeconds).toBe(30);
+    await player.stop();
+  });
+
+  it("publishes volume immediately while native volume IPC is pending", async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: "https://backend.example/file.mp4", kind: "vod" });
+    const invoke = plugin.invoke.bind(plugin);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(plugin, "invoke").mockImplementation(
+      async <T>(
+        command: string,
+        args?: Record<string, unknown>,
+      ): Promise<T> => {
+        if (
+          command === "plugin:video|native_control" &&
+          (args?.payload as { action?: string })?.action === "volume"
+        )
+          await pending;
+        return invoke<T>(command, args);
+      },
+    );
+    const changed = player.setVolume(0.37);
+    expect(player.snapshot.volume).toMatchObject({ level: 0.37, muted: false });
+    release();
+    await changed;
+    await player.stop();
+  });
+
   it('uses tracks discovered by polling for later native selections', async () => {
     vi.useFakeTimers();
     const plugin = new FakeTauriVideoPlugin();
