@@ -219,7 +219,9 @@ export class TauriNativeAdapter extends SessionPlayer {
         }
       } else {
         const startAt = boundedPosition(request.startAtSeconds ?? 0, engineDuration(snapshot));
-        if (startAt > 0 && !snapshot.live) {
+        // A newly opened native pipeline may infer live from an unknown
+        // duration before preroll. The selected request owns VOD/live intent.
+        if (startAt > 0 && request.kind !== 'live') {
           this.acceptSnapshot(await this.control('seek', startAt));
         }
       }
