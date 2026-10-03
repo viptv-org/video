@@ -185,6 +185,25 @@ describe('TauriNativeAdapter', () => {
     });
   }
 
+  it('honors a VOD resume target before native duration and live metadata settle', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openSnapshot = baseSnapshot({ durationSeconds: 0, live: true, playing: true });
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod', startAtSeconds: 30 });
+    expect(plugin.controls.filter(control => control.action === 'seek').map(control => control.value)).toEqual([30]);
+    expect(player.snapshot.time.positionSeconds).toBe(30);
+    await player.stop();
+  });
+
+  it('does not seek a live request when initial native metadata reports otherwise', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openSnapshot = baseSnapshot({ durationSeconds: 0, live: false, playing: true });
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/media/live.m3u8', kind: 'live', startAtSeconds: 30 });
+    expect(plugin.controls.filter(control => control.action === 'seek')).toEqual([]);
+    await player.stop();
+  });
+
   it('abandons seek confirmation when the native session stops', async () => {
     const plugin = new FakeTauriVideoPlugin();
     const { player } = createAdapter(plugin);

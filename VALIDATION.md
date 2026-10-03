@@ -1,5 +1,19 @@
 # Validation
 
+## Initial native VOD resume intent — 2026-10-02
+
+A real Linux source-picker trace retained queue position30, backend request30,
+direct delivery position30 and native-open start30. GStreamer's initial snapshot
+had unknown duration0 and inferred live=true; the adapter skipped the resume
+seek and decoded from0. Startup now takes VOD/live intent from the selected
+request, rather than transient native metadata. Live requests remain free of
+VOD startup seeks even if their initial metadata reports otherwise.
+
+Both public adapter/IPC regressions fail before this correction and pass after.
+All128 adapter/controller tests, typecheck and package build pass. Actual native
+Resume30 replay remains a separate consumer check; this change does not qualify
+the outstanding moving-controls/sidebar flicker, GTK rendering or hardware.
+
 ## Native seek confirmation and picture-mode command — 2026-10-02
 
 A real Linux desktop source-picker run admitted generated header-protected
