@@ -105,6 +105,7 @@ export class TauriNativeAdapter extends SessionPlayer {
   private pollTimer?: ReturnType<typeof setTimeout>;
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
   private resizeObserver?: ResizeObserver;
+  private stopCompositorObserver?: () => void;
   private readonly aperture: NativeAperture;
   private textureStream?: MediaStream;
   private lastLayout?: NativeLayout;
@@ -660,6 +661,10 @@ export class TauriNativeAdapter extends SessionPlayer {
   }
 
   private startLayoutTracking(): void {
+    this.stopCompositorObserver = this.aperture.observe((backgroundChanged) => {
+      if (backgroundChanged) this.aperture.refresh();
+      this.requestLayout();
+    });
     if (typeof ResizeObserver === 'function') {
       this.resizeObserver = new ResizeObserver(() => this.requestLayout());
       this.resizeObserver.observe(this.anchor);
@@ -670,6 +675,8 @@ export class TauriNativeAdapter extends SessionPlayer {
   }
 
   private stopLayoutTracking(): void {
+    this.stopCompositorObserver?.();
+    this.stopCompositorObserver = undefined;
     this.resizeObserver?.disconnect();
     this.resizeObserver = undefined;
     window.removeEventListener('resize', this.handleViewportChange);
@@ -703,10 +710,11 @@ export class TauriNativeAdapter extends SessionPlayer {
     try {
       this.layoutDirty = false;
       const layout = this.measureLayout();
-      if (sameLayout(layout, this.lastLayout)) return;
-      await this.invoker.invoke(`${COMMAND}native_layout`, {
-        payload: { sessionKey, x: layout.x, y: layout.y, width: layout.width, height: layout.height },
-      });
+      if (!sameLayout(layout, this.lastLayout)) {
+        await this.invoker.invoke(`${COMMAND}native_layout`, {
+          payload: { sessionKey, x: layout.x, y: layout.y, width: layout.width, height: layout.height },
+        });
+      }
       if (this.sessionKey !== sessionKey) return;
       this.lastLayout = layout;
       this.aperture.publish(layout);
