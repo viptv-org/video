@@ -110,6 +110,7 @@ export class TauriNativeAdapter extends SessionPlayer {
   private textureStream?: MediaStream;
   private lastLayout?: NativeLayout;
   private layoutDirty = false;
+  private compositorDirty = false;
   private layoutInFlight = false;
   private layoutTimer?: ReturnType<typeof setTimeout>;
 
@@ -662,7 +663,9 @@ export class TauriNativeAdapter extends SessionPlayer {
 
   private startLayoutTracking(): void {
     this.stopCompositorObserver = this.aperture.observe((backgroundChanged) => {
-      if (backgroundChanged) this.aperture.refresh();
+      // Never reconstruct DOM from a MutationObserver microtask. Queue one
+      // refresh with layout so repeated notifications still yield to input.
+      this.compositorDirty ||= backgroundChanged;
       this.requestLayout();
     });
     if (typeof ResizeObserver === 'function') {
@@ -686,6 +689,7 @@ export class TauriNativeAdapter extends SessionPlayer {
       this.layoutTimer = undefined;
     }
     this.layoutDirty = false;
+    this.compositorDirty = false;
     this.layoutInFlight = false;
   }
 
@@ -709,6 +713,10 @@ export class TauriNativeAdapter extends SessionPlayer {
     this.layoutInFlight = true;
     try {
       this.layoutDirty = false;
+      if (this.compositorDirty) {
+        this.compositorDirty = false;
+        this.aperture.refresh();
+      }
       const layout = this.measureLayout();
       if (!sameLayout(layout, this.lastLayout)) {
         await this.invoker.invoke(`${COMMAND}native_layout`, {
