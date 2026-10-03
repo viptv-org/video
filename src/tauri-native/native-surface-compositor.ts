@@ -92,6 +92,8 @@ export class NativeSurfaceCompositor {
     claimSurface(owner, anchor)
   }
 
+  get active(): boolean { return this.#state() !== undefined }
+
   measure(layout: NativeSurfaceLayout, scale: number): SurfaceCompositorFrame {
     const state = this.#state()
     const surfaceBounds = {

@@ -24,12 +24,13 @@ export class NativeAperture {
   }
   refresh(): void { this.compositor?.refresh(); }
   close(): void {
+    const ownsAnchor = !this.compositor || this.compositor.active;
     this.compositor?.release();
     this.compositor = undefined;
-    if (this.savedAnchorVisibility !== undefined) {
+    if (ownsAnchor && this.savedAnchorVisibility !== undefined) {
       this.anchor.style.visibility = this.savedAnchorVisibility;
-      this.savedAnchorVisibility = undefined;
     }
+    this.savedAnchorVisibility = undefined;
   }
   publish(layout: NativeLayout): void {
     const frame = this.compositor?.measure(layout, 1);
