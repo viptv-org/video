@@ -242,6 +242,16 @@ function ancestorClip(
   ancestor: DrilledAncestor,
 ): VisibleSurfaceBounds | undefined {
   if (!ancestor.clipsX && !ancestor.clipsY) return undefined
+  // Root overflow clips the viewport, not the body's content box. Apps with
+  // absolutely positioned content can have a zero-height body.
+  if (ancestor.element === document.body || ancestor.element === document.documentElement) {
+    return {
+      left: 0,
+      top: 0,
+      right: window.innerWidth,
+      bottom: window.innerHeight,
+    }
+  }
   return {
     left: ancestor.clipsX ? rect.left + ancestor.borderLeft : Number.NEGATIVE_INFINITY,
     top: ancestor.clipsY ? rect.top + ancestor.borderTop : Number.NEGATIVE_INFINITY,
