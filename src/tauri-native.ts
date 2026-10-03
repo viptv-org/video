@@ -99,6 +99,7 @@ export class TauriNativeAdapter extends SessionPlayer {
   private protocolVerified = false;
   private volume = 1;
   private muted = false;
+  private volumeFlush?: { sessionKey: string; promise: Promise<void> };
   private timelineOffsetSeconds = 0;
   private timelineDurationSeconds: number | undefined;
   private adoptEngineDuration = false;
@@ -567,20 +568,33 @@ export class TauriNativeAdapter extends SessionPlayer {
     };
   }
 
-  private async applyVolume(): Promise<void> {
+  private applyVolume(): Promise<void> {
     const sessionId = this.snapshot.sessionId;
     // The slider reflects the user's current choice while IPC is pending.
     this.update(sessionId, { volume: { level: this.volume, muted: this.muted } });
-    if (this.sessionKey === undefined) {
-      this.update(sessionId, { volume: { level: this.volume, muted: this.muted } });
-      return;
-    }
+    const sessionKey = this.sessionKey;
+    if (sessionKey === undefined) return Promise.resolve();
+    if (this.volumeFlush?.sessionKey === sessionKey) return this.volumeFlush.promise;
+    const flush = { sessionKey, promise: Promise.resolve() };
+    this.volumeFlush = flush;
+    flush.promise = this.flushVolume(sessionId, flush);
+    return flush.promise;
+  }
+
+  private async flushVolume(sessionId: number, flush: { sessionKey: string; promise: Promise<void> }): Promise<void> {
     try {
-      this.acceptSnapshot(await this.control('volume', this.muted ? 0 : this.volume));
-      if (!this.isCurrent(sessionId)) return;
-      this.update(sessionId, { volume: { level: this.volume, muted: this.muted } });
+      while (this.isCurrent(sessionId) && this.sessionKey === flush.sessionKey) {
+        const value = this.muted ? 0 : this.volume;
+        // Only one volume command can await native IPC. Dragging replaces the
+        // pending value rather than queuing every intermediate pointer sample.
+        await this.control('volume', value);
+        if (value === (this.muted ? 0 : this.volume)) return;
+      }
     } catch (cause) {
+      if (!this.isCurrent(sessionId) || this.sessionKey !== flush.sessionKey) return;
       this.throwOperation(sessionId, 'prepare-failed', 'The native engine could not change the volume.', cause);
+    } finally {
+      if (this.volumeFlush === flush) this.volumeFlush = undefined;
     }
   }
 

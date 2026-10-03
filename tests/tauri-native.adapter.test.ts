@@ -9,6 +9,82 @@ afterEach(() => {
 });
 
 describe('TauriNativeAdapter', () => {
+  it('coalesces slider drags into one pending command and the latest volume', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/file.mp4', kind: 'vod' });
+    const invoke = plugin.invoke.bind(plugin);
+    const values: number[] = [];
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(plugin, 'invoke').mockImplementation(async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+      const payload = args?.payload as { action?: string; value: number } | undefined;
+      if (command.endsWith('native_control') && payload?.action === 'volume') {
+        values.push(payload.value);
+        if (values.length === 1) await pending;
+      }
+      return invoke<T>(command, args);
+    });
+    const changes = Array.from({ length: 100 }, (_, index) => player.setVolume((index + 1) / 100));
+    expect(player.snapshot.volume?.level).toBe(1);
+    const queued = [...values];
+    release();
+    await Promise.all(changes);
+    expect(queued).toEqual([0.01]);
+    expect(values).toEqual([0.01, 1]);
+    await player.stop();
+  });
+
+  it('keeps mute as the latest native value while a slider command is pending', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/file.mp4', kind: 'vod' });
+    const invoke = plugin.invoke.bind(plugin);
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let held = false;
+    vi.spyOn(plugin, 'invoke').mockImplementation(async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+      if (command.endsWith('native_control') && (args?.payload as { action?: string })?.action === 'volume' && !held) {
+        held = true;
+        await pending;
+      }
+      return invoke<T>(command, args);
+    });
+    const first = player.setVolume(0.5);
+    const latest = player.setVolume(0.4);
+    const muted = player.setMuted(true);
+    expect(player.snapshot.volume).toMatchObject({ level: 0.4, muted: true });
+    release();
+    await Promise.all([first, latest, muted]);
+    expect(plugin.controls.filter(control => control.action === 'volume').map(control => control.value)).toEqual([0.5, 0]);
+    await player.stop();
+  });
+
+  it('ignores a retired source volume failure without holding the new source slider', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/file.mp4', kind: 'vod' });
+    const invoke = plugin.invoke.bind(plugin);
+    let reject!: (cause: unknown) => void;
+    const pending = new Promise<void>((_, no) => { reject = no; });
+    let held = false;
+    vi.spyOn(plugin, 'invoke').mockImplementation(async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+      if (command.endsWith('native_control') && (args?.payload as { action?: string })?.action === 'volume' && !held) {
+        held = true;
+        await pending;
+      }
+      return invoke<T>(command, args);
+    });
+    const retired = player.setVolume(0.2);
+    await player.open({ url: 'https://backend.example/other.mp4', kind: 'vod' });
+    await player.setVolume(0.7);
+    reject({ code: 'INVALID_REQUEST', message: 'Retired session.' });
+    await expect(retired).resolves.toBeUndefined();
+    expect(player.snapshot.volume?.level).toBe(0.7);
+    expect(player.snapshot.error).toBeNull();
+    await player.stop();
+  });
+
   it('ignores late successful stats after a terminal startup timeout', async () => {
     vi.useFakeTimers();
     const plugin = new FakeTauriVideoPlugin();
