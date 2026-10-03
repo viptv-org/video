@@ -9,6 +9,29 @@ afterEach(() => {
 });
 
 describe('TauriNativeAdapter', () => {
+  it('emits a terminal stats error once and stops polling until a new source opens', async () => {
+    vi.useFakeTimers();
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/file.mp4', kind: 'vod' });
+    const errors: unknown[] = [];
+    const off = player.subscribe(snapshot => { if (snapshot.error) errors.push(snapshot.error); });
+    plugin.statsError = { code: 'PIPELINE_FAILED', message: 'Native playback failed.' };
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(errors).toHaveLength(1);
+    expect(player.snapshot.error?.code).toBe('prepare-failed');
+    const polls = plugin.commands.filter(command => command.endsWith('native_stats')).length;
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(plugin.commands.filter(command => command.endsWith('native_stats'))).toHaveLength(polls);
+    plugin.statsError = undefined;
+    await player.open({ url: 'https://backend.example/other.mp4', kind: 'vod' });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(player.snapshot.error).toBeNull();
+    expect(player.snapshot.state).toBe('playing');
+    off();
+    await player.stop();
+  });
+
   it("returns to playing after pause and resume facts arrive through polling", async () => {
     vi.useFakeTimers();
     const plugin = new FakeTauriVideoPlugin();
@@ -87,9 +110,22 @@ describe('TauriNativeAdapter', () => {
       ['AUTHORIZATION_FAILED', 'authorization-failed'],
       ['CONNECTION_FAILED', 'connection-failed'],
       ['SOURCE_UNAVAILABLE', 'expired-source'],
+      ['PIPELINE_FAILED', 'prepare-failed'],
+      ['DECODE_FAILED', 'unsupported-format'],
+      ['MEDIA_FORMAT_FAILED', 'unsupported-format'],
+      ['VIDEO_OUTPUT_FAILED', 'engine-unavailable'],
+      ['AUDIO_OUTPUT_FAILED', 'engine-unavailable'],
+      ['PROTECTED_MEDIA', 'authorization-unsupported'],
     ]) {
       expect(nativeOperationError({ code: wire, message: 'Safe source failure.' }, 'unsupported-format', 'Fallback')).toMatchObject({ code: expected });
     }
+  });
+
+  it('does not repeat a misleading decoder message from an older plugin pipeline error', () => {
+    expect(nativeOperationError({ code: 'PIPELINE_FAILED', message: 'The native player could not decode this media delivery.' },
+      'connection-failed', 'Native playback stopped unexpectedly.')).toMatchObject({
+      code: 'prepare-failed', message: 'Native playback stopped unexpectedly.',
+    });
   });
 
   it('rejects invalid source headers before replacing the active native session', async () => {
@@ -383,11 +419,11 @@ describe('TauriNativeAdapter', () => {
     expect(plugin.closedKeys).toHaveLength(1);
   });
 
-  it('maps an open pipeline failure to an unsupported format for delivery escalation', async () => {
+  it('maps an explicit decoder failure to an unsupported format for delivery escalation', async () => {
     const plugin = new FakeTauriVideoPlugin();
     // A persistent pipeline failure: the bounded retry re-opens the same
     // delivery once before the failure reaches the delivery escalation.
-    plugin.openError = { code: 'PIPELINE_FAILED', message: 'no decoder for the selected stream' };
+    plugin.openError = { code: 'DECODE_FAILED', message: 'no decoder for the selected stream' };
     const { player } = createAdapter(plugin);
 
     await expect(player.open({ url: 'https://backend.example/media/direct.mp4', kind: 'vod' }))

@@ -17,6 +17,7 @@ import {
   PlayerOperationError,
   type OpenPlayerRequest,
   type PlayerErrorCode,
+  type PlayerFailure,
   type PlayerTime,
 } from './types';
 import { delay, nonNegative } from './primitives';
@@ -503,7 +504,8 @@ export class TauriNativeAdapter extends SessionPlayer {
         'connection-failed',
         'The native video engine could not open the selected source.',
       );
-      if (error.code !== 'unsupported-format' || !this.isCurrent(sessionId)) throw cause;
+      const pipelineFailure = cause && typeof cause === 'object' && 'code' in cause && cause.code === 'PIPELINE_FAILED';
+      if ((!pipelineFailure && error.code !== 'unsupported-format') || !this.isCurrent(sessionId)) throw cause;
       // Release whatever the failed attempt attached, then re-open the same
       // request: the session key stays this session's correlation.
       await this.closeSession(sessionKey).catch(() => undefined);
@@ -617,7 +619,7 @@ export class TauriNativeAdapter extends SessionPlayer {
     this.pollTimer = setTimeout(async () => {
       this.pollTimer = undefined;
       await this.poll();
-      if (this.sessionKey !== undefined) {
+      if (this.sessionKey !== undefined && this.snapshot.state !== 'error') {
         this.schedulePoll(this.requestedPlaying ? 250 : 1000);
       }
     }, delayMs);
@@ -652,8 +654,7 @@ export class TauriNativeAdapter extends SessionPlayer {
     } catch (cause) {
       if (!this.isCurrent(sessionId)) return;
       const error = nativeOperationError(cause, 'connection-failed', 'Native playback statistics became unavailable.');
-      this.fail(sessionId, error.toFailure());
-      this.stopPolling();
+      this.failNative(sessionId, error.toFailure());
     }
   }
 
@@ -736,7 +737,7 @@ export class TauriNativeAdapter extends SessionPlayer {
       const sessionId = this.snapshot.sessionId;
       if (this.isCurrent(sessionId)) {
         const error = nativeOperationError(cause, 'connection-failed', 'The native video surface could not follow its layout.');
-        this.fail(sessionId, error.toFailure());
+        this.failNative(sessionId, error.toFailure());
       }
     } finally {
       this.layoutInFlight = false;
@@ -758,7 +759,7 @@ export class TauriNativeAdapter extends SessionPlayer {
     this.firstFrameTimer = setTimeout(() => {
       this.firstFrameTimer = undefined;
       if (!this.isCurrent(sessionId) || (this.native?.videoWidth ?? 0) > 0 || this.snapshot.state === 'error') return;
-      this.fail(sessionId, { code: 'unsupported-format', message: 'The native engine did not produce a decoded video frame.' });
+      this.failNative(sessionId, { code: 'prepare-failed', message: 'The native engine did not produce a video frame before startup timed out.' });
     }, FIRST_FRAME_TIMEOUT_MS);
   }
 
@@ -767,6 +768,14 @@ export class TauriNativeAdapter extends SessionPlayer {
       clearTimeout(this.firstFrameTimer);
       this.firstFrameTimer = undefined;
     }
+  }
+
+  private failNative(sessionId: number, error: PlayerFailure): void {
+    if (!this.isCurrent(sessionId) || this.snapshot.state === 'error') return;
+    this.stopPolling();
+    this.clearFirstFrameWatchdog();
+    this.stopLayoutTracking();
+    this.fail(sessionId, error);
   }
 
   private async closeSession(sessionKey: string): Promise<void> {

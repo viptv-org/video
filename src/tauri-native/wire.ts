@@ -42,10 +42,17 @@ function playerErrorCodeFor(wireCode: string | undefined, fallback: PlayerErrorC
     case 'PROTOCOL_MISMATCH':
     case 'RUNTIME_UNAVAILABLE':
       return 'engine-unavailable';
-    // A pipeline failure means the engine cannot handle this delivery, so the
-    // session controller may escalate the same source to managed output.
     case 'PIPELINE_FAILED':
+    case 'SOURCE_OPEN_FAILED':
+      return 'prepare-failed';
+    // Only explicit media/decoder failures justify delivery conversion.
+    case 'DECODE_FAILED':
+    case 'MEDIA_FORMAT_FAILED':
       return 'unsupported-format';
+    case 'VIDEO_OUTPUT_FAILED':
+    case 'AUDIO_OUTPUT_FAILED':
+      return 'engine-unavailable';
+    case 'PROTECTED_MEDIA': return 'authorization-unsupported';
     case 'AUTHORIZATION_FAILED': return 'authorization-failed';
     case 'CONNECTION_FAILED': return 'connection-failed';
     case 'SOURCE_UNAVAILABLE': return 'expired-source';
@@ -58,7 +65,10 @@ function playerErrorCodeFor(wireCode: string | undefined, fallback: PlayerErrorC
 
 export function nativeOperationError(cause: unknown, fallback: PlayerErrorCode, message: string): PlayerOperationError {
   if (isWireError(cause)) {
-    return new PlayerOperationError(playerErrorCodeFor(cause.code, fallback), cause.message, cause);
+    // Older plugin builds mislabeled all pipeline failures as decoder errors.
+    // Keep the caller's operation context for that ambiguous legacy code.
+    return new PlayerOperationError(playerErrorCodeFor(cause.code, fallback),
+      cause.code === 'PIPELINE_FAILED' ? message : cause.message, cause);
   }
   return new PlayerOperationError(fallback, message, cause);
 }
