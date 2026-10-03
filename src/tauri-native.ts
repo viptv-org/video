@@ -567,6 +567,8 @@ export class TauriNativeAdapter extends SessionPlayer {
 
   private async applyVolume(): Promise<void> {
     const sessionId = this.snapshot.sessionId;
+    // The slider reflects the user's current choice while IPC is pending.
+    this.update(sessionId, { volume: { level: this.volume, muted: this.muted } });
     if (this.sessionKey === undefined) {
       this.update(sessionId, { volume: { level: this.volume, muted: this.muted } });
       return;
@@ -597,8 +599,11 @@ export class TauriNativeAdapter extends SessionPlayer {
   private throwOperation(sessionId: number, code: PlayerErrorCode, message: string, cause?: unknown): never {
     const error = cause instanceof PlayerOperationError
       ? cause
-      : nativeOperationError(cause, code, message);
-    this.fail(sessionId, error.toFailure());
+      : cause && typeof cause === 'object' && 'code' in cause && cause.code === 'PIPELINE_FAILED'
+        ? new PlayerOperationError(code, message, cause)
+        : nativeOperationError(cause, code, message);
+    // Refusing a control operation does not prove this delivery is undecodable.
+    // Keep the active session; actual engine failure arrives through polling.
     throw error;
   }
 
@@ -635,6 +640,7 @@ export class TauriNativeAdapter extends SessionPlayer {
       });
       if (this.sessionKey !== sessionKey || !this.isCurrent(sessionId)) return;
       const previous = this.native;
+      this.acceptSnapshot(snapshot);
       this.publishSnapshot(sessionId, snapshot);
       if (previous && previous.playing !== snapshot.playing) {
         this.update(sessionId, { state: snapshot.playing ? 'playing' : 'paused' });

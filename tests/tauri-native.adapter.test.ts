@@ -9,6 +9,32 @@ afterEach(() => {
 });
 
 describe('TauriNativeAdapter', () => {
+  it('uses tracks discovered by polling for later native selections', async () => {
+    vi.useFakeTimers();
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openSnapshot = baseSnapshot({ playing: true, tracks: [] });
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/file.mp4', kind: 'vod' });
+    plugin.statsSnapshot = baseSnapshot({ playing: true });
+    await vi.advanceTimersByTimeAsync(300);
+    await player.selectAudioTrack('audio:1');
+    expect(last(plugin.controls)).toMatchObject({ action: 'track', index: 1 });
+    await player.selectTextTrack('text:2');
+    expect(last(plugin.controls)).toMatchObject({ action: 'track', index: 2 });
+    await player.stop();
+  });
+
+  it('keeps playback active when a track command is refused', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/file.mp4', kind: 'vod' });
+    plugin.controlError = { code: 'PIPELINE_FAILED', message: 'Decoder rejected track selection.' };
+    await expect(player.selectAudioTrack('audio:1')).rejects.toMatchObject({ code: 'unsupported-operation' });
+    expect(player.snapshot.state).toBe('playing');
+    expect(player.snapshot.error).toBeNull();
+    await player.stop();
+  });
+
   it('preserves typed native source failures instead of treating them all as decode refusals', () => {
     for (const [wire, expected] of [
       ['AUTHORIZATION_FAILED', 'authorization-failed'],
@@ -409,7 +435,7 @@ describe('TauriNativeAdapter', () => {
     plugin.controlError = new Error('engine is gone');
 
     await expect(player.seek(10)).rejects.toMatchObject({ code: 'seek-failed' });
-    expect(player.snapshot.state).toBe('error');
+    expect(player.snapshot.state).toBe('playing');
     await player.stop();
   });
 
