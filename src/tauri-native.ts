@@ -619,7 +619,7 @@ export class TauriNativeAdapter extends SessionPlayer {
     this.pollTimer = setTimeout(async () => {
       this.pollTimer = undefined;
       await this.poll();
-      if (this.sessionKey !== undefined && this.snapshot.state !== 'error') {
+      if (this.sessionKey !== undefined && !this.snapshot.error) {
         this.schedulePoll(this.requestedPlaying ? 250 : 1000);
       }
     }, delayMs);
@@ -640,7 +640,7 @@ export class TauriNativeAdapter extends SessionPlayer {
       const snapshot = await this.invoker.invoke<NativeVideoSnapshot>(`${COMMAND}native_stats`, {
         payload: { sessionKey },
       });
-      if (this.sessionKey !== sessionKey || !this.isCurrent(sessionId)) return;
+      if (this.sessionKey !== sessionKey || !this.isCurrent(sessionId) || this.snapshot.error) return;
       const previous = this.native;
       this.acceptSnapshot(snapshot);
       this.publishSnapshot(sessionId, snapshot);
@@ -771,7 +771,7 @@ export class TauriNativeAdapter extends SessionPlayer {
   }
 
   private failNative(sessionId: number, error: PlayerFailure): void {
-    if (!this.isCurrent(sessionId) || this.snapshot.state === 'error') return;
+    if (!this.isCurrent(sessionId) || this.snapshot.error) return;
     this.stopPolling();
     this.clearFirstFrameWatchdog();
     this.stopLayoutTracking();

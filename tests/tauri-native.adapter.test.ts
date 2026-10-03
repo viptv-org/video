@@ -9,6 +9,30 @@ afterEach(() => {
 });
 
 describe('TauriNativeAdapter', () => {
+  it('ignores late successful stats after a terminal startup timeout', async () => {
+    vi.useFakeTimers();
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openSnapshot = baseSnapshot({ videoWidth: 0, videoHeight: 0 });
+    const invoke = plugin.invoke.bind(plugin);
+    let release!: (snapshot: ReturnType<typeof baseSnapshot>) => void;
+    const pending = new Promise<ReturnType<typeof baseSnapshot>>(resolve => { release = resolve; });
+    vi.spyOn(plugin, 'invoke').mockImplementation(async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+      if (command.endsWith('native_stats')) return await pending as T;
+      return invoke<T>(command, args);
+    });
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/file.mp4', kind: 'vod' });
+    vi.advanceTimersByTime(1);
+    vi.advanceTimersByTime(8000);
+    const failure = player.snapshot.error;
+    expect(failure?.code).toBe('prepare-failed');
+    release(baseSnapshot({ playing: false, currentTimeSeconds: 1 }));
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(player.snapshot.state).toBe('error');
+    expect(player.snapshot.error).toBe(failure);
+    await player.stop();
+  });
+
   it('emits a terminal stats error once and stops polling until a new source opens', async () => {
     vi.useFakeTimers();
     const plugin = new FakeTauriVideoPlugin();
