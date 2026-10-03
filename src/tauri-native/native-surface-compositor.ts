@@ -90,9 +90,9 @@ export class NativeSurfaceCompositor {
     this.#owner = owner
     this.#anchor = anchor
     claimSurface(owner, anchor)
+    anchor.style.visibility = 'hidden'
   }
 
-  get active(): boolean { return this.#state() !== undefined }
 
   measure(layout: NativeSurfaceLayout, scale: number): SurfaceCompositorFrame {
     const state = this.#state()

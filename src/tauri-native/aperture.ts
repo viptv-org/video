@@ -10,12 +10,9 @@ export interface NativeLayout {
 /** Preserve upstream background reconstruction and protected video overlays. */
 export class NativeAperture {
   private compositor?: NativeSurfaceCompositor;
-  private savedAnchorVisibility?: string;
   constructor(private readonly anchor: HTMLVideoElement) {}
   open(layout: NativeLayout | undefined): void {
     this.close();
-    this.savedAnchorVisibility = this.anchor.style.visibility;
-    this.anchor.style.visibility = 'hidden';
     this.compositor = new NativeSurfaceCompositor(crypto.randomUUID(), this.anchor);
     if (layout) this.publish(layout);
   }
@@ -24,13 +21,8 @@ export class NativeAperture {
   }
   refresh(): void { this.compositor?.refresh(); }
   close(): void {
-    const ownsAnchor = !this.compositor || this.compositor.active;
     this.compositor?.release();
     this.compositor = undefined;
-    if (ownsAnchor && this.savedAnchorVisibility !== undefined) {
-      this.anchor.style.visibility = this.savedAnchorVisibility;
-    }
-    this.savedAnchorVisibility = undefined;
   }
   publish(layout: NativeLayout): void {
     const frame = this.compositor?.measure(layout, 1);

@@ -63,6 +63,7 @@ export interface InlinePropertySnapshot {
 export interface NativeCssSurfaceState {
   owner: string
   anchor: HTMLVideoElement
+  originalAnchorVisibility: string
   layer: HTMLDivElement
   style: HTMLStyleElement
   drilled: DrilledAncestor[]
@@ -136,6 +137,7 @@ export function claimSurface(owner: string, anchor: HTMLVideoElement): void {
   const state: NativeCssSurfaceState = {
     owner,
     anchor,
+    originalAnchorVisibility: anchor.style.visibility,
     layer,
     style,
     drilled: [],
@@ -251,6 +253,7 @@ function createAncestor(element: HTMLElement, owner: string): DrilledAncestor {
 export function releaseSurface(owner: string): void {
   const state = nativeCssSurfaceScope.__TAURI_VIDEO_NATIVE_CSS_SURFACE__
   if (!state || state.owner !== owner) return
+  state.anchor.style.visibility = state.originalAnchorVisibility
   for (const ancestor of state.drilled) restoreAncestor(ancestor, owner)
   for (const occluder of state.occluders) restoreOccluder(occluder)
   state.layer.remove()
