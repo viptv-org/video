@@ -172,6 +172,13 @@ track files) goes through `sessionMediaRequest`/`sessionMediaFetch`:
   errors → `connection-failed`. Inside Tauri requests use
   `@tauri-apps/plugin-http`.
 
+MediaBunny fetch retries explicitly recognize these typed failures. A direct
+connection refusal is not retried before the controller's authorized gateway
+fallback. Authorization, expiration and format refusals are never retried.
+Transient managed-media connection failures retain exponential backoff, capped
+at 16 seconds. This prevents the error wrapper from hiding a CORS-style refusal
+from the library and consuming the 15-second local open deadline.
+
 ## Source authorization
 
 `checkedSourceAuthorization` validates `PlaybackAuthorization` before any

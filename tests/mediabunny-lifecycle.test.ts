@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MediabunnyAdapter } from '../src/mediabunny';
-const state = vi.hoisted(() => ({ live: true, duration: vi.fn(), dispose: vi.fn(), close: vi.fn(), draw: vi.fn() }));
+import { PlayerOperationError } from '../src/types';
+import type { UrlSourceOptions } from 'mediabunny';
+const state = vi.hoisted(() => ({ live: true, duration: vi.fn(), dispose: vi.fn(), close: vi.fn(), draw: vi.fn(), sourceOptions: undefined as UrlSourceOptions | undefined }));
 vi.mock('mediabunny', () => ({
-  ALL_FORMATS: [], UrlSource: class {},
+  ALL_FORMATS: [], UrlSource: class { constructor(_url: string, options: UrlSourceOptions) { state.sourceOptions = options; } },
   Input: class {
     dispose = state.dispose;
     async getMetadataTags() { return {}; }
@@ -18,6 +20,24 @@ beforeEach(() => {
   vi.stubGlobal('AudioContext', class { state = 'suspended'; destination = {}; createGain() { return { connect() {}, gain: { value: 1 } }; } close = state.close.mockResolvedValue(undefined); });
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+it('does not retry a direct network refusal before the controller can use its gateway fallback', async () => {
+  const player = new MediabunnyAdapter(document.createElement('canvas'));
+  await player.open({ url: `${location.origin}/media/session/cap/source.mp4`, kind: 'vod', paused: true, deliveryMode: 'direct' });
+  expect(state.sourceOptions?.getRetryDelay).toBeTypeOf('function');
+  expect(state.sourceOptions?.getRetryDelay?.(1, new PlayerOperationError('connection-failed', 'Media connection failed.', undefined, 'network'), 'https://source.example/movie')).toBeNull();
+  await player.dispose();
+});
+it('retains transient managed HLS retries but never retries terminal authorization or delivery errors', async () => {
+  const player = new MediabunnyAdapter(document.createElement('canvas'));
+  await player.open({ url: `${location.origin}/media/session/cap/index.m3u8`, kind: 'vod', paused: true, deliveryMode: 'managed' });
+  const retry = state.sourceOptions?.getRetryDelay;
+  expect(retry).toBeTypeOf('function');
+  expect(retry?.(1, new PlayerOperationError('connection-failed', 'Retry.', undefined, 'network'), 'https://gateway.example/segment')).toBe(.5);
+  expect(retry?.(5, new Error('Transient read'), 'https://gateway.example/segment')).toBe(8);
+  for (const code of ['authorization-failed', 'authorization-unsupported', 'expired-source', 'unsupported-format'] as const)
+    expect(retry?.(1, new PlayerOperationError(code, 'Terminal refusal.'), 'https://gateway.example/segment')).toBeNull();
+  await player.dispose();
+});
 it('prepares growing managed VOD without waiting for the playlist to finish', async () => {
   state.duration.mockImplementation(() => new Promise(() => {}));
   const player = new MediabunnyAdapter(document.createElement('canvas'));

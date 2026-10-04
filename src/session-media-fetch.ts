@@ -1,5 +1,16 @@
 import { PlayerOperationError } from './types';
 
+/** Typed fetch failures must not hide permanent refusals from the demuxer's retry policy. */
+export function sessionMediaRetryDelay(direct: boolean): (attempts: number, error: unknown) => number | null {
+  return (attempts, error) => {
+    if (error instanceof PlayerOperationError && (
+      ['authorization-failed', 'authorization-unsupported', 'expired-source', 'unsupported-format'].includes(error.code)
+      || (direct && error.code === 'connection-failed')
+    )) return null;
+    return Math.min(2 ** (attempts - 2), 16);
+  };
+}
+
 interface TransferSample { readonly bytes: number; readonly seconds: number; }
 /** The application supplies an authorized delivery, not an arbitrary proxy URL. */
 export function checkedMediaDelivery(value: string): URL {

@@ -5,7 +5,7 @@ import { PlayerOperationError, growOnlyDuration, timelineDuration, type OpenPlay
 
 import { mediaFailure, canChangeMediaPath } from './browser-policy';
 import { audioChoices, chooseAudio, trackId, videoChoices, AdaptiveQuality } from './media-tracks';
-import { sessionMediaFetch } from './session-media-fetch';
+import { sessionMediaFetch, sessionMediaRetryDelay } from './session-media-fetch';
 import { delay } from './primitives';
 export { sessionMediaFetch } from './session-media-fetch';
 const MEDIABUNNY_CAPABILITIES: PlayerCapabilities = {
@@ -92,10 +92,8 @@ export class MediabunnyAdapter extends SessionPlayer {
     if (hasSourceAuthorization(request.authorization))
       throw new PlayerOperationError('authorization-unsupported', 'Playback requires a backend-compatible media URL.');
     const input = this.input = new Input({
-      // Readahead and bounded retries stay the library defaults: disabling
-      // retries turned one evicted segment of a rolling playlist into a hard
-      // read failure, and a 32 MiB cache still bounds memory per session.
-      source: new UrlSource(request.url, { fetchFn: sessionMediaFetch(request.url, s => this.adaptive.sample(s.bytes, s.seconds)), maxCacheSize: 32 * 1024 * 1024 }),
+      // Preserve transient managed-segment retries without delaying direct gateway fallback.
+      source: new UrlSource(request.url, { fetchFn: sessionMediaFetch(request.url, s => this.adaptive.sample(s.bytes, s.seconds)), getRetryDelay: sessionMediaRetryDelay(request.deliveryMode === 'direct'), maxCacheSize: 32 * 1024 * 1024 }),
       formats: ALL_FORMATS,
       formatOptions: { hls: { offsetTimestampsByDateTime: false } },
     });

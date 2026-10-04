@@ -2,7 +2,7 @@ import { ALL_FORMATS, Input, UrlSource, Output, Mp4OutputFormat, StreamTarget, C
 import { SessionPlayer } from './session-player';
 import { hasSourceAuthorization } from './source-authorization';
 import { PlayerOperationError, timelineDuration, type OpenPlayerRequest, type PlayerCapabilities } from './types';
-import { sessionMediaFetch } from './session-media-fetch';
+import { sessionMediaFetch, sessionMediaRetryDelay } from './session-media-fetch';
 import { mediaFailure } from './browser-policy';
 import { audioChoices, chooseAudio, trackId, videoChoices } from './media-tracks';
 
@@ -45,7 +45,7 @@ export class MediabunnyMseAdapter extends SessionPlayer {
     const openedAt = performance.now();
     const session = this.startSession(request.kind), signal = this.abort.signal;
     if (typeof MediaSource === 'undefined') throw new PlayerOperationError('unsupported-format', 'MediaSource is unavailable.', undefined, 'container');
-    const input = this.input = new Input({ source: new UrlSource(request.url, { maxCacheSize: 32 * 1024 * 1024, fetchFn: sessionMediaFetch(request.url) }), formats: ALL_FORMATS,
+    const input = this.input = new Input({ source: new UrlSource(request.url, { maxCacheSize: 32 * 1024 * 1024, fetchFn: sessionMediaFetch(request.url), getRetryDelay: sessionMediaRetryDelay(request.deliveryMode === 'direct') }), formats: ALL_FORMATS,
       formatOptions: { hls: { offsetTimestampsByDateTime: false } } });
     try {
       const videos = await videoChoices(input);

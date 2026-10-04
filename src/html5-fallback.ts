@@ -2,7 +2,7 @@ import { VizioHtml5Adapter, VIZIO_HTML5_CAPABILITIES, type HtmlMediaLike } from 
 import { IDLE_SNAPSHOT, PlayerOperationError, type OpenPlayerRequest, type Player, type PlayerCapabilities, type PlayerListener, type PlayerSnapshot } from './types';
 import { browserPlaybackPolicy, canChangeMediaPath, mediaFailure } from './browser-policy';
 import { BrowserCaptions } from './captions';
-import { sessionMediaFetch } from './session-media-fetch';
+import { sessionMediaFetch, sessionMediaRetryDelay } from './session-media-fetch';
 import { audioChoices, mediaLanguage } from './media-tracks';
 
 /** WebCodecs availability is a gate, never proof that the selected track decodes. */
@@ -164,7 +164,7 @@ export class Html5FallbackAdapter implements Player {
     const generation = this.generation;
     const { Input, UrlSource, ALL_FORMATS } = await import('mediabunny');
     if (generation !== this.generation) return;
-    const input = this.audioInspector = new Input({ source: new UrlSource(this.request.url, { fetchFn: sessionMediaFetch(this.request.url), maxCacheSize: 32 * 1024 * 1024 }), formats: ALL_FORMATS });
+    const input = this.audioInspector = new Input({ source: new UrlSource(this.request.url, { fetchFn: sessionMediaFetch(this.request.url), getRetryDelay: sessionMediaRetryDelay(true), maxCacheSize: 32 * 1024 * 1024 }), formats: ALL_FORMATS });
     try {
       const video = await input.getPrimaryVideoTrack();
       if (!video) return;
