@@ -44,7 +44,7 @@ function session(id: string, url: string, mode = 'managed', position = 0): Playb
 }
 
 describe('PlaybackSessionController', () => {
-  it('retires the outgoing presentation before desktop replacement preparation and restores on refusal', async () => {
+  it('retires desktop sources before preparation and keeps a refused replacement empty', async () => {
     const player = new FakePlayer();
     const backend = {
       startPlayback: vi.fn().mockResolvedValueOnce(session('old', 'https://media/old')),
@@ -60,8 +60,45 @@ describe('PlaybackSessionController', () => {
     expect(player.snapshot.state).toBe('stopped');
     refuse(new Error('Provider unavailable'));
     await expect(replacement).rejects.toThrow('Provider unavailable');
-    expect(player.snapshot.state).toBe('playing');
-    expect(player.opened.at(-1)?.startAtSeconds).toBe(71);
+    expect(player.snapshot.state).toBe('stopped');
+    expect(controller.snapshot.active).toBeNull();
+    expect(player.opened).toHaveLength(1);
+  });
+  it('admits only the latest explicit replacement after held native retirement', async () => {
+    const player = new FakePlayer();
+    const backend = { startPlayback: vi.fn().mockResolvedValueOnce(session('old', 'https://media/old')).mockResolvedValueOnce(session('new', 'https://media/new')), stopPlayback: vi.fn().mockResolvedValue(undefined) };
+    const controller = new PlaybackSessionController({ player, backend, capabilities, retireOnReplace: true });
+    await controller.start({ item, source });
+    let finish!: () => void;
+    vi.spyOn(player, 'stop').mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    const superseded = controller.start({ item, source: { ...source, id: 'superseded' } }).catch(error => error);
+    const latest = controller.start({ item, source: { ...source, id: 'latest' } });
+    await Promise.resolve();
+    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
+    expect(backend.stopPlayback).toHaveBeenCalledExactlyOnceWith('old');
+    expect(controller.snapshot.active).toBeNull();
+    finish();
+    expect((await superseded).name).toBe('AbortError');
+    expect((await latest).intent.source?.id).toBe('latest');
+    expect(player.opened.map(request => request.url)).toEqual(['https://media/old', 'https://media/new']);
+  });
+  it('stop cancels an explicit replacement while retirement is held and waits for cleanup', async () => {
+    const player = new FakePlayer();
+    const backend = { startPlayback: vi.fn().mockResolvedValue(session('old', 'https://media/old')), stopPlayback: vi.fn().mockResolvedValue(undefined) };
+    const controller = new PlaybackSessionController({ player, backend, capabilities, retireOnReplace: true });
+    await controller.start({ item, source });
+    let finish!: () => void;
+    vi.spyOn(player, 'stop').mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    const replacement = controller.start({ item, source }).catch(error => error);
+    let settled = false;
+    const stopped = controller.stop().then(() => { settled = true; });
+    await Promise.resolve();
+    expect(controller.snapshot).toEqual({ state: 'stopped', active: null, error: null });
+    expect(settled).toBe(false);
+    finish(); await stopped;
+    expect((await replacement).name).toBe('AbortError');
+    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
+    expect(backend.stopPlayback).toHaveBeenCalledExactlyOnceWith('old');
   });
   it('finishes lease release before native close when the host is shutting down', async () => {
     const player = new FakePlayer();
@@ -127,7 +164,8 @@ describe('PlaybackSessionController', () => {
     const stopping = controller.stop();
     try {
       await vi.waitFor(() => expect(backend.stopPlayback).toHaveBeenCalledExactlyOnceWith('active'));
-      expect(controller.snapshot.state).not.toBe('stopped');
+      expect(controller.snapshot.state).toBe('stopped');
+      expect(controller.snapshot.active).toBeNull();
     } finally {
       nativeStopped();
       await stopping;

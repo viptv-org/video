@@ -9,6 +9,27 @@ afterEach(() => {
 });
 
 describe('TauriNativeAdapter', () => {
+  it('clears duration, clock and tracks immediately when leaving before native close finishes', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/movie.mp4', kind: 'vod', adoptEngineDuration: true });
+    const invoke = plugin.invoke.bind(plugin);
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(plugin, 'invoke').mockImplementation(async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+      if (command.endsWith('native_close')) await pending;
+      return invoke<T>(command, args);
+    });
+    const stopping = player.stop();
+    expect(player.snapshot.state).toBe('stopped');
+    expect(player.snapshot.time.durationSeconds).toBeNull();
+    expect(player.snapshot.time.positionSeconds).toBe(0);
+    expect(player.snapshot.tracks.audio).toHaveLength(0);
+    expect(player.snapshot.tracks.text).toHaveLength(0);
+    expect(player.snapshot.time.bufferedEndSeconds).toBeUndefined();
+    expect(player.snapshot.error).toBeNull();
+    release(); await stopping;
+  });
   it('uses numbered labels for unknown languages while preserving real track titles', async () => {
     const plugin = new FakeTauriVideoPlugin();
     plugin.openSnapshot = baseSnapshot({ tracks: [
@@ -48,7 +69,7 @@ describe('TauriNativeAdapter', () => {
     plugin.openSnapshot = baseSnapshot({ durationSeconds: 0, videoWidth: 0 });
     const { player } = createAdapter(plugin);
     await player.open({ url: 'https://backend.example/movie.mp4', kind: 'vod', adoptEngineDuration: true });
-    plugin.statsSnapshot = baseSnapshot({ durationSeconds: 5400, currentTimeSeconds: 1, bufferedSeconds: 31 });
+    plugin.statsSnapshot = baseSnapshot({ durationSeconds: 5400, currentTimeSeconds: 1, bufferedSeconds: 31, live: true });
     await vi.advanceTimersByTimeAsync(300);
     expect(player.snapshot.time.durationSeconds).toBe(5400);
     expect(player.snapshot.time.bufferedEndSeconds).toBe(31);

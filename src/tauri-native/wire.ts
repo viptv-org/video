@@ -68,7 +68,7 @@ export function nativeOperationError(cause: unknown, fallback: PlayerErrorCode, 
     // Older plugin builds mislabeled all pipeline failures as decoder errors.
     // Keep the caller's operation context for that ambiguous legacy code.
     return new PlayerOperationError(playerErrorCodeFor(cause.code, fallback),
-      cause.code === 'PIPELINE_FAILED' ? message : cause.message, cause);
+      cause.code === 'PIPELINE_FAILED' && cause.message === 'The native player could not decode this media delivery.' ? message : cause.message, cause);
   }
   return new PlayerOperationError(fallback, message, cause);
 }
@@ -86,15 +86,15 @@ export function nativeDiagnostics(url: string, backend?: string): PlayerDiagnost
   };
 }
 
-export function engineDuration(snapshot: NativeVideoSnapshot | undefined): number | null {
-  return snapshot && !snapshot.live && snapshot.durationSeconds > 0
+export function engineDuration(snapshot: NativeVideoSnapshot | undefined, kind?: 'vod' | 'live'): number | null {
+  return snapshot && kind !== 'live' && (kind === 'vod' || !snapshot.live) && snapshot.durationSeconds > 0
     ? snapshot.durationSeconds
     : null;
 }
 
-export function hasEnded(snapshot: NativeVideoSnapshot | undefined): boolean {
+export function hasEnded(snapshot: NativeVideoSnapshot | undefined, kind?: 'vod' | 'live'): boolean {
   return Boolean(snapshot
-    && !snapshot.live
+    && kind !== 'live' && (kind === 'vod' || !snapshot.live)
     && snapshot.durationSeconds > 0
     && snapshot.currentTimeSeconds >= snapshot.durationSeconds);
 }

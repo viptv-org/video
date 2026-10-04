@@ -219,11 +219,11 @@ export class TauriNativeAdapter extends SessionPlayer {
           await delay(500);
           if (!this.isCurrent(sessionId)) return;
           this.acceptSnapshot(await this.control('pause'));
-          this.acceptSnapshot(await this.control('seek', boundedPosition(request.startAtSeconds ?? 0, engineDuration(snapshot))));
+          this.acceptSnapshot(await this.control('seek', boundedPosition(request.startAtSeconds ?? 0, engineDuration(snapshot, this.request?.kind))));
           this.acceptSnapshot(await this.control('volume', this.muted ? 0 : this.volume));
         }
       } else {
-        const startAt = boundedPosition(request.startAtSeconds ?? 0, engineDuration(snapshot));
+        const startAt = boundedPosition(request.startAtSeconds ?? 0, engineDuration(snapshot, this.request?.kind));
         // A newly opened native pipeline may infer live from an unknown
         // duration before preroll. The selected request owns VOD/live intent.
         if (startAt > 0 && request.kind !== 'live') {
@@ -290,7 +290,7 @@ export class TauriNativeAdapter extends SessionPlayer {
     const native = this.native;
     // The engine is the authority: it reports refusal honestly, and mpv can
     // still serve seeks within its demuxer cache for unseekable media.
-    const duration = engineDuration(native);
+    const duration = engineDuration(native, this.request?.kind);
     let target = boundedPosition(positionSeconds - this.timelineOffsetSeconds, duration);
     if (native) {
       const minimum = Math.max(0, native.seekableStartSeconds ?? 0);
@@ -385,8 +385,9 @@ export class TauriNativeAdapter extends SessionPlayer {
 
   async stop(): Promise<void> {
     this.invalidateSession();
-    await this.teardownNative();
+    // Clear presentation facts before native teardown can wait on the host.
     this.terminal('stopped');
+    await this.teardownNative();
   }
 
   async dispose(): Promise<void> {
@@ -557,12 +558,12 @@ export class TauriNativeAdapter extends SessionPlayer {
     const actual = this.timelineOffsetSeconds + Math.max(0, snapshot.currentTimeSeconds);
     const position = this.pendingSeek && Math.abs(snapshot.currentTimeSeconds - this.pendingSeek.target) > 1.5
       ? this.snapshot.time.positionSeconds : actual;
-    const duration = engineDuration(snapshot);
+    const duration = engineDuration(snapshot, this.request?.kind);
     const engine = duration !== null ? duration + this.timelineOffsetSeconds : null;
     const next = timelineDuration(this.timelineDurationSeconds, engine, this.adoptEngineDuration);
     this.observedTitleDuration = growOnlyDuration(this.observedTitleDuration, next);
     const lead = snapshot.bufferedSeconds - snapshot.currentTimeSeconds;
-    const bufferedEnd = snapshot.live || lead <= 0
+    const bufferedEnd = this.request?.kind === 'live' || lead <= 0
       ? null
       : Math.min(
         snapshot.bufferedSeconds + this.timelineOffsetSeconds,
@@ -669,13 +670,13 @@ export class TauriNativeAdapter extends SessionPlayer {
       if (previous && previous.playing !== snapshot.playing) {
         this.update(sessionId, { state: snapshot.playing ? 'playing' : 'paused' });
       }
-      if (!hasEnded(previous) && hasEnded(snapshot)) {
+      if (!hasEnded(previous, this.request?.kind) && hasEnded(snapshot, this.request?.kind)) {
         this.requestedPlaying = false;
         this.update(sessionId, { state: 'ended' });
       }
     } catch (cause) {
       if (!this.isCurrent(sessionId)) return;
-      const error = nativeOperationError(cause, 'connection-failed', 'Native playback statistics became unavailable.');
+      const error = nativeOperationError(cause, 'connection-failed', 'The desktop host could not report why playback stopped.');
       this.failNative(sessionId, error.toFailure());
     }
   }

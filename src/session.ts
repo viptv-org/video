@@ -120,7 +120,7 @@ export class PlaybackSessionController<
     finally { this.pendingStarts.delete(controller); }
   }
   private activePlayerSessionId = 0;
-  private retiringState?: { sessionId: string; position: number; paused: boolean };
+  private retiringPresentation?: Promise<void>;
   private pausedPlayerSessionId = 0;
   private readonly recoveredSessions = new Set<string>();
   /** The one next-operation Back is allowed to restore after adapter open. */
@@ -143,8 +143,19 @@ export class PlaybackSessionController<
     this.recoveredSessions.clear();
     this.cancelNext(false);
     const operation = this.nextOperation();
+    if (this.options.retireOnReplace && this.current) {
+      const previous = this.current;
+      this.current = null;
+      const closing = this.options.player.stop();
+      const releasing = this.options.backend.stopPlayback(previous.session.id);
+      const retirement = Promise.allSettled([closing, releasing]).then(() => undefined);
+      this.retiringPresentation = retirement;
+      void retirement.then(() => { if (this.retiringPresentation === retirement) this.retiringPresentation = undefined; });
+    }
     this.publish({ state: this.current ? 'replacing' : 'opening', active: this.current, error: null });
     try {
+      await this.retiringPresentation;
+      if (operation !== this.operationGeneration) return this.cancelledResult();
       const capabilities = await this.resolveCapabilities();
       if (operation !== this.operationGeneration) return this.cancelledResult();
       let request = playbackRequest(intent, capabilities, intent.position ?? 0);
@@ -154,7 +165,7 @@ export class PlaybackSessionController<
       // deliver. Transport failures (status 0) are surfaced, never converted.
       for (let attempt = 0; ; attempt += 1) {
         try {
-          return await this.transition(intent, request, this.current, () => operation === this.operationGeneration, () => false, undefined, this.options.retireOnReplace === true);
+          return await this.transition(intent, request, this.current, () => operation === this.operationGeneration, () => false);
         } catch (error) {
           if (operation !== this.operationGeneration) return this.cancelledResult();
           // Native direct is preferred, but an authorized gateway may deliver
@@ -315,6 +326,8 @@ export class PlaybackSessionController<
     const operation = this.nextOperation();
     const active = this.current;
     this.current = null;
+    this.publish({ state: 'stopped', active: null, error: null });
+    const retirement = this.retiringPresentation;
     // A native decoder close can stall or fail. Begin lease release before
     // waiting for it so shutdown does not strand a server reservation.
     const releasing = active ? this.options.backend.stopPlayback(active.session.id) : Promise.resolve();
@@ -323,7 +336,7 @@ export class PlaybackSessionController<
     const released = options.releaseBeforePlayer ? await Promise.allSettled([releasing]) : [];
     const nativeStop = !options.releaseBeforePlayer || operation === this.operationGeneration
       ? this.options.player.stop() : Promise.resolve();
-    const stopped = await Promise.allSettled([nativeStop, ...(options.releaseBeforePlayer ? [] : [releasing])]);
+    const stopped = await Promise.allSettled([nativeStop, retirement, ...(options.releaseBeforePlayer ? [] : [releasing])]);
     const failed = [...stopped, ...released].find(result => result.status === 'rejected');
     if (failed?.status === 'rejected') throw failed.reason;
     if (operation === this.operationGeneration) this.publish({ state: 'stopped', active: null, error: null });
@@ -336,16 +349,9 @@ export class PlaybackSessionController<
     stillWanted: () => boolean = () => true,
     restoreOnCancellation: () => boolean = () => false,
     previousState?: { position: number; paused: boolean },
-    retirePrevious = false,
   ): Promise<PlaybackControllerActive<Item, Source>> {
-    const saved = previous && this.retiringState?.sessionId === previous.session.id ? this.retiringState : previousState;
-    const wasPaused = saved?.paused ?? this.options.player.snapshot.state === 'paused';
-    const previousPosition = saved?.position ?? this.options.player.snapshot.time.positionSeconds;
-    if (retirePrevious && previous) {
-      this.retiringState = { sessionId: previous.session.id, position: previousPosition, paused: wasPaused };
-      await this.options.player.stop();
-      if (!stillWanted()) return this.cancelledResult();
-    }
+    const wasPaused = previousState?.paused ?? this.options.player.snapshot.state === 'paused';
+    const previousPosition = previousState?.position ?? this.options.player.snapshot.time.positionSeconds;
     this.publish({ state: previous ? 'replacing' : 'opening', active: previous, error: null });
     let session: PlaybackSessionView;
     try {
@@ -353,9 +359,6 @@ export class PlaybackSessionController<
     } catch (cause) {
       if (!stillWanted()) return this.cancelledResult();
       const error = asError(cause);
-      if (retirePrevious && previous) {
-        await this.restore(previous, previousPosition, wasPaused, stillWanted).catch(() => undefined);
-      }
       this.publish({ state: 'error', active: this.current, error });
       throw error;
     }
@@ -398,7 +401,6 @@ export class PlaybackSessionController<
         return this.cancelledResult();
       }
       this.current = candidate;
-      this.retiringState = undefined;
       owned = undefined;
       this.activePlayerSessionId = this.options.player.snapshot.sessionId;
       // A cleanup failure leaks a backend session but must never undo a
