@@ -142,16 +142,40 @@ describe('HTML HLS delivery', () => {
 
 });
 
-it('rejects an audio-only black video session after a bounded first-frame wait and cancels the watch on stop', async () => {
+it('retries a silent native HLS stall despite metadata dimensions, then fails once if MSE also has no frames', async () => {
   vi.useFakeTimers();
   try {
     const media = new Media(); media.nativeHls = true;
-    Object.defineProperty(media, 'videoWidth', { configurable: true, value: 0 });
+    Object.defineProperty(media, 'videoWidth', { configurable: true, value: 1920 });
+    Object.defineProperty(media, 'getVideoPlaybackQuality', { value: () => ({ totalVideoFrames: 0 }) });
     const player = new VizioHtml5Adapter(media);
     const opening = player.open({ url: url(), kind: 'vod' }); media.emit('loadedmetadata'); await opening;
     await vi.advanceTimersByTimeAsync(8000);
+    expect(hls.instances).toHaveLength(1);
+    expect(player.snapshot.state).not.toBe('error');
+    media.emit('loadedmetadata');
+    await vi.advanceTimersByTimeAsync(8000);
     expect(player.snapshot).toMatchObject({ state: 'error', error: { code: 'unsupported-format' } });
+    expect(hls.instances).toHaveLength(1);
     await player.stop(); await vi.advanceTimersByTimeAsync(8000); expect(player.snapshot.state).toBe('stopped'); await player.dispose();
+  } finally { vi.useRealTimers(); }
+});
+it('does not judge paused native HLS metadata as a failed decoder before play is requested', async () => {
+  vi.useFakeTimers();
+  try {
+    const media = new Media(); media.nativeHls = true;
+    Object.defineProperty(media, 'videoWidth', { value: 0 });
+    Object.defineProperty(media, 'getVideoPlaybackQuality', { value: () => ({ totalVideoFrames: 0 }) });
+    const player = new VizioHtml5Adapter(media);
+    const opening = player.open({ url: url(), kind: 'vod', paused: true });
+    media.emit('loadedmetadata'); await opening;
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(player.snapshot.state).toBe('paused');
+    expect(hls.instances).toHaveLength(0);
+    await player.play();
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(hls.instances).toHaveLength(1);
+    await player.dispose();
   } finally { vi.useRealTimers(); }
 });
 it('does not reject a decoded first frame or an explicitly audio-only source', async () => {
