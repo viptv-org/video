@@ -9,6 +9,24 @@ afterEach(() => {
 });
 
 describe('TauriNativeAdapter', () => {
+  it('lets mpv apply its native start option without seeking before the movie has loaded', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openSnapshot = baseSnapshot({ backend: 'mpv', durationSeconds: 0, live: true, videoWidth: 0, videoHeight: 0, playing: false });
+    const invoke = plugin.invoke.bind(plugin);
+    vi.spyOn(plugin, 'invoke').mockImplementation(async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+      if (command.endsWith('native_control') && (args?.payload as { action?: string })?.action === 'seek') {
+        throw { code: 'PIPELINE_FAILED', message: 'MPV: MPV operation failed (-12/-12). Diagnostic GET: HTTP 206 Partial Content · application/octet-stream' };
+      }
+      return invoke<T>(command, args);
+    });
+    const { player } = createAdapter(plugin);
+    try {
+      await expect(player.open({ url: 'https://backend.example/movie.mkv', kind: 'vod', startAtSeconds: 30 })).resolves.toBeUndefined();
+      expect(plugin.openedPayloads[0]).toMatchObject({ startAtSeconds: 30 });
+      expect(plugin.controls.filter(control => control.action === 'seek')).toEqual([]);
+      expect(player.snapshot.error).toBeNull();
+    } finally { await player.stop(); }
+  });
   it('clears duration, clock and tracks immediately when leaving before native close finishes', async () => {
     const plugin = new FakeTauriVideoPlugin();
     const { player } = createAdapter(plugin);

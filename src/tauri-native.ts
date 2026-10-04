@@ -226,7 +226,10 @@ export class TauriNativeAdapter extends SessionPlayer {
         const startAt = boundedPosition(request.startAtSeconds ?? 0, engineDuration(snapshot, this.request?.kind));
         // A newly opened native pipeline may infer live from an unknown
         // duration before preroll. The selected request owns VOD/live intent.
-        if (startAt > 0 && request.kind !== 'live') {
+        // mpv applies startAtSeconds through its native `start` option while
+        // loading. loadfile returns before file-loaded; a second seek here
+        // races demuxer initialization and fails with MPV_ERROR_COMMAND (-12).
+        if (startAt > 0 && request.kind !== 'live' && snapshot.backend !== 'mpv') {
           this.acceptSnapshot(await this.control('seek', startAt));
         }
       }

@@ -91,6 +91,9 @@ façade.
   `native_prepare_texture_stream`.
 - **Open retry.** A `PIPELINE_FAILED` open is retried once with the same
   payload; a first frame must appear within 8 s unless `expectedVideo: false`.
+- **MPV resume.** `startAtSeconds` is applied by libmpv's native `start`
+  option. The adapter must not send another startup seek: `loadfile`
+  acknowledges before loading completes, and a premature seek returns -12.
 - Cookie, User-Agent and arbitrary headers are forwarded to the engine.
 
 ## Server session controller
