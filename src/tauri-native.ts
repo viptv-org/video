@@ -94,6 +94,7 @@ export class TauriNativeAdapter extends SessionPlayer {
   private sessionKey?: string;
   private native?: NativeVideoSnapshot;
   private seekGeneration = 0;
+  private pendingSeek?: { generation: number; target: number };
   private pictureMode: 'fit' | 'fill' = 'fit';
   private requestedPlaying = false;
   private protocolVerified = false;
@@ -313,8 +314,9 @@ export class TauriNativeAdapter extends SessionPlayer {
         target = Math.max(target, minimum);
       }
     }
-    const before = native?.currentTimeSeconds ?? 0;
+    const before = this.snapshot.time.positionSeconds - this.timelineOffsetSeconds;
     const generation = ++this.seekGeneration;
+    this.pendingSeek = { generation, target };
     const sessionKey = this.sessionKey;
     // A lying origin answers the seek's range request by replaying the
     // stream from the beginning: the position lands far below both the
@@ -329,19 +331,21 @@ export class TauriNativeAdapter extends SessionPlayer {
       // Flushing decoders can acknowledge at zero before asynchronous seek
       // completion. Confirm with bounded engine observations before reporting
       // that the origin replayed the beginning. No position is fabricated.
-      for (let attempt = 0; replayed() && attempt < 20; attempt++) {
-        await delay(50);
+      const landed = () => Math.abs(snapshot.currentTimeSeconds - target) <= 1.5;
+      for (let attempt = 0; !landed() && attempt < 80; attempt++) {
+        await delay(75);
         if (!current()) return;
         snapshot = await this.invoker.invoke<NativeVideoSnapshot>(`${COMMAND}native_stats`, { payload: { sessionKey } });
         if (!current()) return;
+        if (replayed() && attempt >= 19) break;
       }
-      if (replayed()) {
+      if (!landed()) {
         // The engine restarted the stream instead of landing the seek; it
         // is still playing, so this reaches the caller without failing the
         // session.
         throw new PlayerOperationError(
           'seek-failed',
-          'The stream replayed from its beginning instead of seeking; the origin cannot serve that position.',
+          replayed() ? 'The stream replayed from its beginning instead of seeking; the origin cannot serve that position.' : 'The engine did not confirm the requested seek position.',
         );
       }
       this.acceptSnapshot(snapshot);
@@ -349,6 +353,8 @@ export class TauriNativeAdapter extends SessionPlayer {
     } catch (cause) {
       if (cause instanceof PlayerOperationError) throw cause;
       this.throwOperation(sessionId, 'seek-failed', 'The native engine could not seek the selected source.', cause);
+    } finally {
+      if (this.pendingSeek?.generation === generation) this.pendingSeek = undefined;
     }
   }
 
@@ -548,7 +554,9 @@ export class TauriNativeAdapter extends SessionPlayer {
 
   /** The seek bar's length: the server total, raised only by an original file. */
   private time(snapshot: NativeVideoSnapshot): PlayerTime {
-    const position = this.timelineOffsetSeconds + Math.max(0, snapshot.currentTimeSeconds);
+    const actual = this.timelineOffsetSeconds + Math.max(0, snapshot.currentTimeSeconds);
+    const position = this.pendingSeek && Math.abs(snapshot.currentTimeSeconds - this.pendingSeek.target) > 1.5
+      ? this.snapshot.time.positionSeconds : actual;
     const duration = engineDuration(snapshot);
     const engine = duration !== null ? duration + this.timelineOffsetSeconds : null;
     const next = timelineDuration(this.timelineDurationSeconds, engine, this.adoptEngineDuration);
@@ -807,6 +815,7 @@ export class TauriNativeAdapter extends SessionPlayer {
     const sessionKey = this.sessionKey;
     this.sessionKey = undefined;
     this.native = undefined;
+    this.pendingSeek = undefined;
     this.request = undefined;
     this.requestedPlaying = false;
     this.lastLayout = undefined;

@@ -44,6 +44,25 @@ function session(id: string, url: string, mode = 'managed', position = 0): Playb
 }
 
 describe('PlaybackSessionController', () => {
+  it('retires the outgoing presentation before desktop replacement preparation and restores on refusal', async () => {
+    const player = new FakePlayer();
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValueOnce(session('old', 'https://media/old')),
+      stopPlayback: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = new PlaybackSessionController({ player, backend, capabilities, retireOnReplace: true });
+    await controller.start({ item, source });
+    player.snapshot = { ...player.snapshot, time: { ...player.snapshot.time, positionSeconds: 71 } };
+    let refuse!: (error: Error) => void;
+    backend.startPlayback.mockImplementationOnce(() => new Promise((_, reject) => { refuse = reject; }));
+    const replacement = controller.start({ item, source: { ...source, id: 'other' } });
+    await vi.waitFor(() => expect(backend.startPlayback).toHaveBeenCalledTimes(2));
+    expect(player.snapshot.state).toBe('stopped');
+    refuse(new Error('Provider unavailable'));
+    await expect(replacement).rejects.toThrow('Provider unavailable');
+    expect(player.snapshot.state).toBe('playing');
+    expect(player.opened.at(-1)?.startAtSeconds).toBe(71);
+  });
   it('finishes lease release before native close when the host is shutting down', async () => {
     const player = new FakePlayer();
     const nativeStop = vi.spyOn(player, 'stop');

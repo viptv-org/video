@@ -9,6 +9,40 @@ afterEach(() => {
 });
 
 describe('TauriNativeAdapter', () => {
+  it('retains the playback clock while a seek reports a transient zero', async () => {
+    vi.useFakeTimers();
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openSnapshot = baseSnapshot({ currentTimeSeconds: 27 });
+    plugin.seekAcknowledgesAtZero = true;
+    plugin.statsSnapshot = baseSnapshot({ currentTimeSeconds: 0 });
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/movie.mp4', kind: 'vod', adoptEngineDuration: true });
+    const positions: number[] = [];
+    const off = player.subscribe(snapshot => positions.push(snapshot.time.positionSeconds));
+    const seeking = player.seek(17);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(player.snapshot.time.positionSeconds).toBe(27);
+    plugin.statsSnapshot = baseSnapshot({ currentTimeSeconds: 17 });
+    await vi.advanceTimersByTimeAsync(200);
+    await seeking;
+    expect(player.snapshot.time.positionSeconds).toBe(17);
+    expect(positions).not.toContain(0);
+    off(); await player.stop();
+  });
+
+  it('publishes duration and buffering from polling without any seek command', async () => {
+    vi.useFakeTimers();
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openSnapshot = baseSnapshot({ durationSeconds: 0, videoWidth: 0 });
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/movie.mp4', kind: 'vod', adoptEngineDuration: true });
+    plugin.statsSnapshot = baseSnapshot({ durationSeconds: 5400, currentTimeSeconds: 1, bufferedSeconds: 31 });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(player.snapshot.time.durationSeconds).toBe(5400);
+    expect(player.snapshot.time.bufferedEndSeconds).toBe(31);
+    expect(plugin.controls.some(control => control.action === 'seek')).toBe(false);
+    await player.stop();
+  });
   it('coalesces slider drags into one pending command and the latest volume', async () => {
     const plugin = new FakeTauriVideoPlugin();
     const { player } = createAdapter(plugin);

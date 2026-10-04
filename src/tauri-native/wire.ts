@@ -114,15 +114,18 @@ export function tracksFromNative(tracks: readonly NativeVideoTrack[]): PlayerTra
   const text: PlayerTrack[] = [];
   let selectedAudioId: string | null = null;
   let selectedTextId: string | null = null;
+  const counts = { audio: 0, text: 0 };
   for (const track of tracks) {
     if (track.kind !== 'audio' && track.kind !== 'subtitle') continue;
     const kind = track.kind === 'audio' ? 'audio' : 'text';
     const id = `${kind}:${track.index}`;
-    const fallback = `${kind === 'audio' ? 'Audio' : 'Subtitle'} ${track.index}`;
+    const number = ++counts[kind];
+    const fallback = `${kind === 'audio' ? 'Audio' : 'Subtitle'} ${number}${track.codec ? ` · ${track.codec}` : ''}`;
+    const known = (text: string) => text.trim().length > 0 && !/^(und|unknown|undefined|audio|video|subtitle)$/i.test(text.trim());
     const entry: PlayerTrack = {
       id,
-      label: [track.label, track.language].find(value => value.length > 0) ?? fallback,
-      language: track.language.length > 0 ? track.language : undefined,
+      label: [track.label, track.language].find(known) ?? fallback,
+      language: known(track.language) ? track.language : undefined,
       available: true,
     };
     if (kind === 'audio') audio.push(entry); else text.push(entry);
