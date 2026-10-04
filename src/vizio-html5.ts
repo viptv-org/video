@@ -31,6 +31,7 @@ export interface HtmlMediaLike {
   muted?: boolean;
   readonly videoWidth?: number;
   readonly videoHeight?: number;
+  getVideoPlaybackQuality?(): { readonly totalVideoFrames: number };
   currentTime: number;
   readonly duration: number;
   readonly paused: boolean;
@@ -79,7 +80,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
   private hls: Hls | null = null;
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
   private expectedVideo = true;
-  private nativeHlsFallback: (() => boolean) | null = null;
+  private nativeHlsFallback: ((stalled?: boolean) => boolean) | null = null;
   private pauseRequested = false;
   private activeKind: OpenPlayerRequest['kind'] | null = null;
   private timelineOffsetSeconds = 0;
@@ -248,9 +249,10 @@ export class VizioHtml5Adapter extends SessionPlayer {
             // A native MIME hint is not decode evidence. Some Chromium builds
             // advertise HLS, then reject valid MPEG-TS playlists after metadata.
             // Retry that exact capability locally once, before server escalation.
-            this.nativeHlsFallback = () => {
-              if (!this.isCurrent(sessionId) || ![3, 4].includes(this.media.error?.code ?? 0)) return false;
+            this.nativeHlsFallback = (stalled = false) => {
+              if (!this.isCurrent(sessionId) || !stalled && ![3, 4].includes(this.media.error?.code ?? 0)) return false;
               this.nativeHlsFallback = null;
+              this.clearFirstFrameWatchdog();
               attempt++;
               if (request.kind !== 'live' && Number.isFinite(this.media.currentTime) && this.media.currentTime > 0)
                 targetPosition = this.media.currentTime;
@@ -281,6 +283,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
     const sessionId = this.activeSessionOrThrow();
     try {
       await this.media.play();
+      this.watchFirstFrame(sessionId);
       this.update(sessionId, { state: 'playing', error: null });
     } catch (cause) {
       const error = mediaFailure(cause);
@@ -291,6 +294,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
 
   async pause(): Promise<void> {
     this.pauseRequested = true;
+    this.clearFirstFrameWatchdog();
     const sessionId = this.activeSessionOrThrow();
     this.media.pause();
     this.onTimeUpdate();
@@ -387,11 +391,16 @@ export class VizioHtml5Adapter extends SessionPlayer {
   async setMuted(muted: boolean): Promise<void> { this.media.muted = muted; this.onVolume(); }
   private onVolume(): void { this.update(this.snapshot.sessionId, { volume: { level: this.media.volume ?? 1, muted: this.media.muted ?? false } }); }
   private clearFirstFrameWatchdog(): void { clearTimeout(this.firstFrameTimer); this.firstFrameTimer = undefined; }
+  private hasVideoFrame(): boolean {
+    const frames = this.media.getVideoPlaybackQuality?.().totalVideoFrames;
+    return (this.media.videoWidth ?? 0) > 0 && (frames === undefined || frames > 0);
+  }
   private watchFirstFrame(sessionId: number): void {
-    if (!this.expectedVideo || this.media.videoWidth === undefined || this.media.videoWidth > 0 || this.firstFrameTimer) return;
+    if (!this.expectedVideo || this.pauseRequested || this.media.videoWidth === undefined || this.hasVideoFrame() || this.firstFrameTimer) return;
     this.firstFrameTimer = setTimeout(() => {
       this.firstFrameTimer = undefined;
-      if (!this.isCurrent(sessionId) || (this.media.videoWidth ?? 0) > 0 || this.snapshot.state === 'error') return;
+      if (!this.isCurrent(sessionId) || this.pauseRequested || this.hasVideoFrame() || this.snapshot.state === 'error') return;
+      if (this.nativeHlsFallback?.(true)) return;
       this.nativeHlsFallback = null;
       this.fail(sessionId, { code: 'unsupported-format', message: 'The selected source did not produce a decoded video frame.' });
       this.media.pause(); this.destroyHls();
@@ -404,7 +413,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
   }
 
   private onMetadata(): void {
-    if ((this.media.videoWidth ?? 0) > 0) this.clearFirstFrameWatchdog();
+    if (this.hasVideoFrame()) this.clearFirstFrameWatchdog();
     const sessionId = this.snapshot.sessionId;
     if (!this.isCurrent(sessionId)) return;
     this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight } : undefined, time: { positionSeconds: this.timelineOffsetSeconds + this.media.currentTime, durationSeconds: this.titleDuration() }, tracks: this.tracks() });
@@ -417,6 +426,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
     this.update(sessionId, { state: 'playing', error: null });
   }
   private onPause(): void {
+    if (this.pauseRequested) this.clearFirstFrameWatchdog();
     const sessionId = this.snapshot.sessionId;
     if (!this.media.ended && !this.media.error && this.snapshot.state !== 'error')
       this.update(sessionId, { state: 'paused' });
@@ -427,7 +437,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
     this.update(sessionId, { state: 'buffering' });
   }
   private onTimeUpdate(): void {
-    if ((this.media.videoWidth ?? 0) > 0) this.clearFirstFrameWatchdog();
+    if (this.hasVideoFrame()) this.clearFirstFrameWatchdog();
     const sessionId = this.snapshot.sessionId;
     this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight } : undefined, time: { positionSeconds: this.timelineOffsetSeconds + this.media.currentTime, durationSeconds: this.titleDuration() } });
   }
