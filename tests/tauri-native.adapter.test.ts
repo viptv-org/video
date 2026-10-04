@@ -9,6 +9,18 @@ afterEach(() => {
 });
 
 describe('TauriNativeAdapter', () => {
+  it('uses numbered labels for unknown languages while preserving real track titles', async () => {
+    const plugin = new FakeTauriVideoPlugin();
+    plugin.openSnapshot = baseSnapshot({ tracks: [
+      { id: 'audio-1', index: 1, kind: 'audio', language: 'und', label: 'UND', codec: 'aac', selected: true },
+      { id: 'audio-2', index: 2, kind: 'audio', language: 'und', label: 'Director commentary', codec: 'aac', selected: false },
+    ] });
+    const { player } = createAdapter(plugin);
+    await player.open({ url: 'https://backend.example/movie.mp4', kind: 'vod' });
+    expect(player.snapshot.tracks.audio.map(track => track.label)).toEqual(['Audio 1 · aac', 'Director commentary']);
+    expect(player.snapshot.tracks.audio[0].language).toBeUndefined();
+    await player.stop();
+  });
   it('retains the playback clock while a seek reports a transient zero', async () => {
     vi.useFakeTimers();
     const plugin = new FakeTauriVideoPlugin();
