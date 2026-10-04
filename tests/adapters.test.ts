@@ -54,6 +54,27 @@ class FakeMedia {
   listenerCount(type: string) { return this.listeners.get(type)?.size ?? 0; }
 }
 
+it('keeps a native metadata seek and delayed playing events paused until Play is requested', async () => {
+  const media = new FakeMedia();
+  let currentTime = 0;
+  Object.defineProperty(media, 'canPlayType', { value: () => 'probably' });
+  Object.defineProperty(media, 'currentTime', {
+    get: () => currentTime,
+    set: value => { currentTime = value; media.paused = false; media.emit('play'); },
+  });
+  const player = new VizioHtml5Adapter(media);
+  const opening = player.open({ url: 'https://gateway.example/clip.m3u8', kind: 'vod', paused: true, startAtSeconds: 37 });
+  media.emit('loadedmetadata'); await opening;
+  expect(media.paused).toBe(true);
+  media.paused = false; media.emit('playing');
+  expect(media.paused).toBe(true);
+  expect(player.snapshot.state).toBe('paused');
+  await player.play();
+  expect(media.paused).toBe(false);
+  expect(player.snapshot.state).toBe('playing');
+  await player.dispose();
+});
+
 describe('TizenAvplayAdapter', () => {
   it('opens the exact selected source, exposes tracks, and ignores a stale preparation callback', async () => {
     const avplay = new FakeAvplay();

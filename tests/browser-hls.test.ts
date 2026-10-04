@@ -178,6 +178,25 @@ it('does not judge paused native HLS metadata as a failed decoder before play is
     await player.dispose();
   } finally { vi.useRealTimers(); }
 });
+it('preserves a decoder failure when pending play rejects after first-frame cleanup', async () => {
+  vi.useFakeTimers();
+  try {
+    const media = new Media();
+    Object.defineProperty(media, 'videoWidth', { value: 0 });
+    let rejectPlay!: (error: Error) => void;
+    media.play = vi.fn(() => new Promise<void>((_, reject) => { rejectPlay = reject; }));
+    const player = new VizioHtml5Adapter(media);
+    const opening = player.open({ url: url(), kind: 'vod' });
+    const rejected = expect(opening).rejects.toMatchObject({ code: 'unsupported-format' });
+    media.emit('loadedmetadata');
+    await vi.advanceTimersByTimeAsync(8000);
+    rejectPlay(new DOMException('Playback interrupted by decoder cleanup.', 'AbortError'));
+    await rejected;
+    expect(player.snapshot.error?.code).toBe('unsupported-format');
+    await player.dispose();
+  } finally { vi.useRealTimers(); }
+});
+
 it('does not reject a decoded first frame or an explicitly audio-only source', async () => {
   vi.useFakeTimers();
   try {

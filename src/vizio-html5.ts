@@ -160,6 +160,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
           error: null,
         });
         if (this.pauseRequested) {
+          this.media.pause();
           this.pendingOpen = null;
           resolve();
           return;
@@ -169,6 +170,11 @@ export class VizioHtml5Adapter extends SessionPlayer {
           (cause) => {
             if (!this.isCurrent(sessionId)) return resolve();
             if (readyAttempt !== attempt) return;
+            if (this.snapshot.state === 'error' && this.snapshot.error) {
+              const failure = this.snapshot.error;
+              reject(new PlayerOperationError(failure.code, failure.message, cause, failure.reason, failure.selection));
+              return;
+            }
             if (this.nativeHlsFallback?.()) return;
             const error = this.media.error ? mediaError(this.media, 'prepare-failed')
               : new PlayerOperationError('prepare-failed', 'The browser could not start the selected source.', cause);
@@ -423,6 +429,11 @@ export class VizioHtml5Adapter extends SessionPlayer {
   private onPlay(): void {
     if (this.media.error || this.snapshot.state === 'error') return;
     const sessionId = this.snapshot.sessionId;
+    if (this.pauseRequested) {
+      this.media.pause();
+      this.update(sessionId, { state: 'paused' });
+      return;
+    }
     this.update(sessionId, { state: 'playing', error: null });
   }
   private onPause(): void {
