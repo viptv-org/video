@@ -91,6 +91,18 @@ façade.
   `native_prepare_texture_stream`.
 - **Open retry.** A `PIPELINE_FAILED` open is retried once with the same
   payload; a first frame must appear within 8 s unless `expectedVideo: false`.
+  Deferred startup pipeline/format failures from stats share that same one-retry
+  budget before decoded frames appear. Retry reapplies current layout and
+  fences every response to the owning session; watchdog/retirement cleanup also
+  covers rejected IPC. Authorization, transport and unavailable-source errors
+  are not retried by this native startup path.
+- **Asynchronous controls.** A native `controlFailure` snapshot reports a
+  nonterminal seek/track refusal. Seek rejects to its caller; track refusal
+  produces feedback whether first observed in a control response or polling.
+  Neither converts the selected delivery or stops healthy stats polling.
+- **Buffered ranges.** Native `bufferedRanges` preserves starts and gaps and
+  maps engine time to absolute title time through the managed offset. An
+  endpoint-only engine reports forward lead, never a fabricated zero-based cache.
 - **MPV resume.** `startAtSeconds` is applied by libmpv's native `start`
   option. The adapter must not send another startup seek: `loadfile`
   acknowledges before loading completes, and a premature seek returns -12.

@@ -36,6 +36,7 @@ export interface NativeVideoSnapshot {
   readonly durationSeconds: number;
   readonly currentTimeSeconds: number;
   readonly bufferedSeconds: number;
+  readonly bufferedRanges?: readonly { start: number; end: number }[];
   readonly live?: boolean;
   readonly seekable?: boolean;
   readonly seekableStartSeconds?: number;
