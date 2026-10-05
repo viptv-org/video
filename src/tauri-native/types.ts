@@ -48,6 +48,7 @@ export interface NativeVideoSnapshot {
   readonly droppedFrames?: number;
   readonly measuredFps?: number;
   readonly hardwareBackend?: string;
+  readonly controlFailure?: 'seek' | 'track';
 
   /** The engine serving this snapshot, e.g. 'mpv' or 'gstreamer'. */
   readonly backend?: string;

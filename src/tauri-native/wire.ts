@@ -42,10 +42,17 @@ function playerErrorCodeFor(wireCode: string | undefined, fallback: PlayerErrorC
     case 'PROTOCOL_MISMATCH':
     case 'RUNTIME_UNAVAILABLE':
       return 'engine-unavailable';
-    // A pipeline failure means the engine cannot handle this delivery, so the
-    // session controller may escalate the same source to managed output.
     case 'PIPELINE_FAILED':
+    case 'SOURCE_OPEN_FAILED':
+      return 'prepare-failed';
+    // Only explicit media/decoder failures justify delivery conversion.
+    case 'DECODE_FAILED':
+    case 'MEDIA_FORMAT_FAILED':
       return 'unsupported-format';
+    case 'VIDEO_OUTPUT_FAILED':
+    case 'AUDIO_OUTPUT_FAILED':
+      return 'engine-unavailable';
+    case 'PROTECTED_MEDIA': return 'authorization-unsupported';
     case 'AUTHORIZATION_FAILED': return 'authorization-failed';
     case 'CONNECTION_FAILED': return 'connection-failed';
     case 'SOURCE_UNAVAILABLE': return 'expired-source';
@@ -58,7 +65,10 @@ function playerErrorCodeFor(wireCode: string | undefined, fallback: PlayerErrorC
 
 export function nativeOperationError(cause: unknown, fallback: PlayerErrorCode, message: string): PlayerOperationError {
   if (isWireError(cause)) {
-    return new PlayerOperationError(playerErrorCodeFor(cause.code, fallback), cause.message, cause);
+    // Older plugin builds mislabeled all pipeline failures as decoder errors.
+    // Keep the caller's operation context for that ambiguous legacy code.
+    return new PlayerOperationError(playerErrorCodeFor(cause.code, fallback),
+      cause.code === 'PIPELINE_FAILED' && cause.message === 'The native player could not decode this media delivery.' ? message : cause.message, cause);
   }
   return new PlayerOperationError(fallback, message, cause);
 }
@@ -76,15 +86,15 @@ export function nativeDiagnostics(url: string, backend?: string): PlayerDiagnost
   };
 }
 
-export function engineDuration(snapshot: NativeVideoSnapshot | undefined): number | null {
-  return snapshot && !snapshot.live && snapshot.durationSeconds > 0
+export function engineDuration(snapshot: NativeVideoSnapshot | undefined, kind?: 'vod' | 'live'): number | null {
+  return snapshot && kind !== 'live' && (kind === 'vod' || !snapshot.live) && snapshot.durationSeconds > 0
     ? snapshot.durationSeconds
     : null;
 }
 
-export function hasEnded(snapshot: NativeVideoSnapshot | undefined): boolean {
+export function hasEnded(snapshot: NativeVideoSnapshot | undefined, kind?: 'vod' | 'live'): boolean {
   return Boolean(snapshot
-    && !snapshot.live
+    && kind !== 'live' && (kind === 'vod' || !snapshot.live)
     && snapshot.durationSeconds > 0
     && snapshot.currentTimeSeconds >= snapshot.durationSeconds);
 }
@@ -104,15 +114,18 @@ export function tracksFromNative(tracks: readonly NativeVideoTrack[]): PlayerTra
   const text: PlayerTrack[] = [];
   let selectedAudioId: string | null = null;
   let selectedTextId: string | null = null;
+  const counts = { audio: 0, text: 0 };
   for (const track of tracks) {
     if (track.kind !== 'audio' && track.kind !== 'subtitle') continue;
     const kind = track.kind === 'audio' ? 'audio' : 'text';
     const id = `${kind}:${track.index}`;
-    const fallback = `${kind === 'audio' ? 'Audio' : 'Subtitle'} ${track.index}`;
+    const number = ++counts[kind];
+    const fallback = `${kind === 'audio' ? 'Audio' : 'Subtitle'} ${number}${track.codec ? ` · ${track.codec}` : ''}`;
+    const known = (text: string) => text.trim().length > 0 && !/^(und|unknown|undefined|audio|video|subtitle)$/i.test(text.trim());
     const entry: PlayerTrack = {
       id,
-      label: [track.label, track.language].find(value => value.length > 0) ?? fallback,
-      language: track.language.length > 0 ? track.language : undefined,
+      label: [track.label, track.language].find(known) ?? fallback,
+      language: known(track.language) ? track.language : undefined,
       available: true,
     };
     if (kind === 'audio') audio.push(entry); else text.push(entry);

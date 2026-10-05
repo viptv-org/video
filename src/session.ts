@@ -85,6 +85,7 @@ export interface PlaybackBackend {
 
 export interface PlaybackSessionControllerOptions {
   readonly player: Player;
+  readonly retireOnReplace?: boolean;
   readonly backend: PlaybackBackend;
   readonly capabilities: PlaybackCapabilities | (() => Promise<PlaybackCapabilities>);
 }
@@ -119,6 +120,7 @@ export class PlaybackSessionController<
     finally { this.pendingStarts.delete(controller); }
   }
   private activePlayerSessionId = 0;
+  private retiringPresentation?: Promise<void>;
   private pausedPlayerSessionId = 0;
   private readonly recoveredSessions = new Set<string>();
   /** The one next-operation Back is allowed to restore after adapter open. */
@@ -141,8 +143,19 @@ export class PlaybackSessionController<
     this.recoveredSessions.clear();
     this.cancelNext(false);
     const operation = this.nextOperation();
+    if (this.options.retireOnReplace && this.current) {
+      const previous = this.current;
+      this.current = null;
+      const closing = this.options.player.stop();
+      const releasing = this.options.backend.stopPlayback(previous.session.id);
+      const retirement = Promise.allSettled([closing, releasing]).then(() => undefined);
+      this.retiringPresentation = retirement;
+      void retirement.then(() => { if (this.retiringPresentation === retirement) this.retiringPresentation = undefined; });
+    }
     this.publish({ state: this.current ? 'replacing' : 'opening', active: this.current, error: null });
     try {
+      await this.retiringPresentation;
+      if (operation !== this.operationGeneration) return this.cancelledResult();
       const capabilities = await this.resolveCapabilities();
       if (operation !== this.operationGeneration) return this.cancelledResult();
       let request = playbackRequest(intent, capabilities, intent.position ?? 0);
@@ -152,7 +165,7 @@ export class PlaybackSessionController<
       // deliver. Transport failures (status 0) are surfaced, never converted.
       for (let attempt = 0; ; attempt += 1) {
         try {
-          return await this.transition(intent, request, this.current, () => operation === this.operationGeneration);
+          return await this.transition(intent, request, this.current, () => operation === this.operationGeneration, () => false);
         } catch (error) {
           if (operation !== this.operationGeneration) return this.cancelledResult();
           // Native direct is preferred, but an authorized gateway may deliver
@@ -313,6 +326,8 @@ export class PlaybackSessionController<
     const operation = this.nextOperation();
     const active = this.current;
     this.current = null;
+    this.publish({ state: 'stopped', active: null, error: null });
+    const retirement = this.retiringPresentation;
     // A native decoder close can stall or fail. Begin lease release before
     // waiting for it so shutdown does not strand a server reservation.
     const releasing = active ? this.options.backend.stopPlayback(active.session.id) : Promise.resolve();
@@ -321,7 +336,7 @@ export class PlaybackSessionController<
     const released = options.releaseBeforePlayer ? await Promise.allSettled([releasing]) : [];
     const nativeStop = !options.releaseBeforePlayer || operation === this.operationGeneration
       ? this.options.player.stop() : Promise.resolve();
-    const stopped = await Promise.allSettled([nativeStop, ...(options.releaseBeforePlayer ? [] : [releasing])]);
+    const stopped = await Promise.allSettled([nativeStop, retirement, ...(options.releaseBeforePlayer ? [] : [releasing])]);
     const failed = [...stopped, ...released].find(result => result.status === 'rejected');
     if (failed?.status === 'rejected') throw failed.reason;
     if (operation === this.operationGeneration) this.publish({ state: 'stopped', active: null, error: null });

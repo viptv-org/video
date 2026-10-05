@@ -93,6 +93,7 @@ export class FakeTauriVideoPlugin {
     }
     if (command === 'plugin:video|native_stats') {
       if (this.statsError) throw this.statsError;
+      if (this.statsSnapshot) this.#tracks = this.statsSnapshot.tracks;
       return (this.statsSnapshot ?? this.#snapshot()) as T;
     }
     if (command === 'plugin:video|native_layout') {
