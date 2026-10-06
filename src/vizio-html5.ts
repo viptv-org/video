@@ -216,13 +216,25 @@ export class VizioHtml5Adapter extends SessionPlayer {
         if (!Hls.isSupported()) throw new PlayerOperationError('unsupported-format', 'This browser cannot play HLS. Native HLS or MediaSource support is required.');
         const url = checkedMediaDelivery(request.url);
         const hls = new Hls({
-          maxBufferLength: 20,
-          maxMaxBufferLength: 30,
-          backBufferLength: 10,
+          // A 2016-2020 SmartCast TV's Wi-Fi commonly sustains ~5-10 Mbps with
+          // 150 ms latency; at a 4 Mbps rendition the previous 20 s forward
+          // window drained during single-segment hiccups and rebuffered every
+          // few seconds. 45 s forward (75 s hard ceiling) rides out transcode
+          // pacing jitter at ~20 MB RAM on this device class; the 30 s back
+          // buffer keeps seeks cheap.
+          maxBufferLength: 45,
+          maxMaxBufferLength: 75,
+          backBufferLength: 30,
+          maxBufferSize: 60 * 1000 * 1000,
           loader: FetchLoader,
           fetchSetup: (context, init) => sessionMediaRequest(url.href, context.url, init),
         });
         this.hls = hls;
+        // Consecutive non-fatal network failures stall the video silently
+        // (buffer drains, spinner forever). hls.js keeps retrying internally,
+        // so three in a row with no successful load in between escalates to a
+        // classified error the UI can surface; any successful load resets it.
+        let consecutiveNetworkFailures = 0;
         const publishTracks = () => {
           if (!this.isCurrent(sessionId)) return;
           this.update(sessionId, { tracks: this.tracks(), qualities: (hls.levels ?? []).map((level, index) => ({
@@ -234,8 +246,16 @@ export class VizioHtml5Adapter extends SessionPlayer {
         hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, publishTracks);
         hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, publishTracks);
         hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, publishTracks);
+        hls.on(Hls.Events.LEVEL_UPDATED, () => { consecutiveNetworkFailures = 0; });
+        hls.on(Hls.Events.FRAG_LOADED, () => { consecutiveNetworkFailures = 0; });
         hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (!this.isCurrent(sessionId) || !data.fatal && data.response?.code !== 406) return;
+          if (!this.isCurrent(sessionId)) return;
+          if (!data.fatal && data.response?.code !== 406) {
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && ++consecutiveNetworkFailures >= 3) {
+              failOpen(new PlayerOperationError('connection-failed', 'The stream connection kept failing. Retry playback or choose another source.', undefined, 'network'));
+            }
+            return;
+          }
           failOpen(new PlayerOperationError(data.response?.code === 406 ? 'unsupported-format' : data.type === Hls.ErrorTypes.NETWORK_ERROR ? 'connection-failed' : 'unsupported-format', 'The selected HLS source could not be played.', undefined, data.response?.code === 406 ? 'container' : undefined));
         });
         hls.attachMedia(this.media as HTMLMediaElement);

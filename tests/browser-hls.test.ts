@@ -5,7 +5,7 @@ import type { HtmlMediaLike } from '../src/vizio-html5';
 const hls = vi.hoisted(() => ({ supported: true, instances: [] as Array<{ config: { fetchSetup: (context: { url: string }, init?: RequestInit) => Request }; destroy: ReturnType<typeof vi.fn>; loadSource: ReturnType<typeof vi.fn>; listeners: Record<string, (event: string, data: { fatal: boolean; type: string; response?: { code: number } }) => void> }> }));
 vi.mock('hls.js', () => ({ FetchLoader: class {}, default: class {
   static isSupported = () => hls.supported;
-  static Events = { ERROR: 'error' };
+  static Events = { ERROR: 'error', LEVEL_UPDATED: 'levelUpdated', FRAG_LOADED: 'fragLoaded' };
   static ErrorTypes = { NETWORK_ERROR: 'network' };
   destroy = vi.fn(); loadSource = vi.fn(); attachMedia = vi.fn();
   listeners: Record<string, (event: string, data: { fatal: boolean; type: string; response?: { code: number } }) => void> = {};
@@ -101,6 +101,37 @@ describe('HTML HLS delivery', () => {
     await rejection;
     expect(player.snapshot.state).toBe('error');
     expect(hls.instances[0].destroy).toHaveBeenCalledOnce();
+  });
+  it('escalates repeated non-fatal network errors after playback instead of stalling silently', async () => {
+    const media = new Media(); const player = new VizioHtml5Adapter(media);
+    const opening = player.open({ url: url(), kind: 'vod', paused: true });
+    media.emit('loadedmetadata'); await opening;
+    const instance = hls.instances[0];
+    // Transient non-fatal errors keep playing: no error state, nothing destroyed.
+    instance.listeners.error('error', { fatal: false, type: 'network' });
+    expect(player.snapshot.state).not.toBe('error');
+    expect(instance.destroy).not.toHaveBeenCalled();
+    // Three consecutive network failures with no intervening success escalate
+    // to a classified, visible failure (recovery may replace the session).
+    instance.listeners.error('error', { fatal: false, type: 'network' });
+    instance.listeners.error('error', { fatal: false, type: 'network' });
+    expect(player.snapshot).toMatchObject({ state: 'error', error: { code: 'connection-failed', reason: 'network' } });
+    expect(instance.destroy).toHaveBeenCalledOnce();
+    await player.dispose();
+  });
+  it('resets the consecutive-failure count after a successful segment load', async () => {
+    const media = new Media(); const player = new VizioHtml5Adapter(media);
+    const opening = player.open({ url: url(), kind: 'vod', paused: true });
+    media.emit('loadedmetadata'); await opening;
+    const instance = hls.instances[0];
+    instance.listeners.error('error', { fatal: false, type: 'network' });
+    instance.listeners.error('error', { fatal: false, type: 'network' });
+    // hls.js emits FRAG_LOADED (not mocked as an event name here) — simulate a
+    // manifest/track event reset via the LEVEL_UPDATED listener contract below.
+    instance.listeners.levelUpdated?.();
+    instance.listeners.error('error', { fatal: false, type: 'network' });
+    expect(player.snapshot.state).not.toBe('error');
+    await player.dispose();
   });
   it('retries a native HLS demux failure locally on the same session after metadata, preserving paused position', async () => {
     const media = new Media(); media.nativeHls = true;
