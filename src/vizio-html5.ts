@@ -34,6 +34,7 @@ export interface HtmlMediaLike {
   getVideoPlaybackQuality?(): { readonly totalVideoFrames: number };
   currentTime: number;
   readonly duration: number;
+  readonly buffered?: { readonly length: number; start(index: number): number; end(index: number): number } | null;
   readonly paused: boolean;
   readonly ended: boolean;
   readonly error: { readonly code: number; readonly message?: string } | null;
@@ -100,6 +101,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
       waiting: () => this.onWaiting(),
       playing: () => this.onPlay(),
       timeupdate: () => this.onTimeUpdate(),
+      progress: () => this.onProgress(),
       ended: () => this.onEnded(),
       error: () => this.onError(),
     };
@@ -459,7 +461,34 @@ export class VizioHtml5Adapter extends SessionPlayer {
   private onTimeUpdate(): void {
     if (this.hasVideoFrame()) this.clearFirstFrameWatchdog();
     const sessionId = this.snapshot.sessionId;
-    this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight } : undefined, time: { positionSeconds: this.timelineOffsetSeconds + this.media.currentTime, durationSeconds: this.titleDuration() } });
+    this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight } : undefined, time: this.publishableTime() });
+  }
+  /**
+   * `progress` fires while data downloads even when `timeupdate` is silent
+   * (mid-stall buffering, paused prefetch). Publishing here keeps the UI's
+   * buffered ranges advancing during exactly the states where the viewer
+   * watches the bar; ranges stay engine-reported, never invented.
+   */
+  private onProgress(): void {
+    if (this.media.error || this.snapshot.state === 'error') return;
+    this.update(this.snapshot.sessionId, { time: this.publishableTime() });
+  }
+  private publishableTime(): { positionSeconds: number; durationSeconds: number | null; bufferedRanges?: { start: number; end: number }[]; bufferedEndSeconds?: number | null } {
+    const time = { positionSeconds: this.timelineOffsetSeconds + this.media.currentTime, durationSeconds: this.titleDuration() };
+    const ranges = this.engineBufferedRanges();
+    if (!ranges) return time;
+    return { ...time, bufferedRanges: ranges, bufferedEndSeconds: ranges[ranges.length - 1]?.end ?? null };
+  }
+  private engineBufferedRanges(): { start: number; end: number }[] | null {
+    const buffered = this.media.buffered;
+    if (!buffered || !buffered.length) return null;
+    const ranges: { start: number; end: number }[] = [];
+    for (let index = 0; index < buffered.length; index += 1) {
+      const start = this.timelineOffsetSeconds + buffered.start(index);
+      const end = this.timelineOffsetSeconds + buffered.end(index);
+      if (end > start) ranges.push({ start, end });
+    }
+    return ranges.length ? ranges : null;
   }
   private onEnded(): void {
     if (this.media.error || this.snapshot.state === 'error') return;
