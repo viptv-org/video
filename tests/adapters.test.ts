@@ -37,6 +37,7 @@ class FakeMedia {
   paused = true;
   ended = false;
   error: { code: number; message?: string } | null = null;
+  buffered: { length: number; start(index: number): number; end(index: number): number } | null = null;
   textTracks: Array<{ kind: string; label: string; language: string; mode: 'disabled' | 'hidden' | 'showing' }> = [
     { kind: 'subtitles', label: 'Spanish', language: 'es', mode: 'disabled' },
   ];
@@ -187,6 +188,43 @@ describe('VizioHtml5Adapter', () => {
     expect(media.textTracks[0].mode).toBe('showing');
     await player.selectTextTrack(null);
     expect(media.textTracks[0].mode).toBe('disabled');
+  });
+
+  it('publishes engine-reported buffered ranges on progress, shifted by the managed timeline offset', async () => {
+    const media = new FakeMedia();
+    const player = new VizioHtml5Adapter(media);
+    // Gateway delivery starts the generated timeline at 600 while the media
+    // element plays from zero; ranges must be reported on title time.
+    const opening = player.open({ url: 'https://backend.example/managed.mp4', kind: 'vod', startAtSeconds: 600, timelineOffsetSeconds: 600 });
+    media.emit('loadedmetadata');
+    await opening;
+
+    expect(media.listenerCount('progress')).toBe(1);
+    expect(player.snapshot.time.bufferedRanges).toBeUndefined();
+    media.currentTime = 10;
+    media.buffered = {
+      length: 2,
+      start: (index) => [0, 50][index],
+      end: (index) => [30, 80][index],
+    };
+    media.emit('progress');
+    expect(player.snapshot.time.bufferedRanges).toEqual([
+      { start: 600, end: 630 },
+      { start: 650, end: 680 },
+    ]);
+    expect(player.snapshot.time.bufferedEndSeconds).toBe(680);
+
+    // A stall that stops timeupdate must still advance the buffered window.
+    media.buffered = { length: 1, start: () => 0, end: () => 95 };
+    media.emit('progress');
+    expect(player.snapshot.time.bufferedRanges).toEqual([{ start: 600, end: 695 }]);
+    expect(player.snapshot.time.positionSeconds).toBe(610);
+
+    // No engine ranges means no published ranges; the adapter never invents them.
+    media.buffered = null;
+    media.emit('progress');
+    expect(player.snapshot.time.bufferedRanges).toBeUndefined();
+    expect(player.snapshot.time.bufferedEndSeconds).toBeUndefined();
   });
 
   it('does not claim custom-header or audio-track support and rejects a request requiring them', async () => {
