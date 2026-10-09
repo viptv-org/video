@@ -575,6 +575,8 @@ export class TauriNativeAdapter extends SessionPlayer {
           audioCodec: selectedCodec(snapshot, 'audio'),
           width: snapshot.videoWidth,
           height: snapshot.videoHeight,
+          presentedFrames: snapshot.presentedFrames,
+          frameTiming: snapshot.presentedFrames === undefined ? 'unavailable' : 'verified',
         }
         : undefined,
     });

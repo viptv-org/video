@@ -122,3 +122,15 @@ preserve a newer player after delayed release, and close after release rejection
 The first two fail on `b1818f9`; all 126 tests, type checks and package build pass.
 Actual DELETE-before-blocked-GTK and bounded process/audio teardown remain the
 desktop host's integrated qualification; this library owns no process watchdog.
+
+# Local torrent transport integration, 2026-10-09
+
+The backend port may explicitly forbid delivery conversion for an admitted
+session. Initial and late decoder failures then preserve that refusal instead
+of retrying through the managed ladder. A definitive source-format 406 is also
+terminal. Ordinary direct/managed recovery remains covered by existing tests.
+Tauri diagnostics expose the native presented-frame counter so the host can
+acknowledge actual rendering separately from endpoint readiness.
+
+Type checking, all 171 tests and the package build pass. These adapter/controller
+checks do not qualify peer acquisition, native hardware or production delivery.

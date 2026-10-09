@@ -81,6 +81,8 @@ export type PlaybackControllerListener<
 export interface PlaybackBackend {
   startPlayback(request: PlaybackStart, options?: { readonly signal?: AbortSignal }): Promise<PlaybackSessionView>;
   stopPlayback(sessionId: string): Promise<void>;
+  /** A local transport can explicitly forbid server conversion for its admitted session. */
+  canConvertPlayback?(sessionId: string): boolean;
 }
 
 export interface PlaybackSessionControllerOptions {
@@ -195,7 +197,7 @@ export class PlaybackSessionController<
     if (['opening', 'replacing', 'preparing-next'].includes(this.currentSnapshot.state)) return true;
     const active = this.current;
     if (!active || snapshot.sessionId !== this.activePlayerSessionId) return true;
-    const recovery = recoveryRequest(active.session, active.request, snapshot.error.code);
+    const recovery = this.options.backend.canConvertPlayback?.(active.session.id) === false ? undefined : recoveryRequest(active.session, active.request, snapshot.error.code);
     const request = recovery ? failureRetryRequest(recovery, snapshot.error) : undefined;
     if (!request || this.recoveredSessions.has(active.session.id)) return false;
     this.recoveredSessions.add(active.session.id);
@@ -382,7 +384,7 @@ export class PlaybackSessionController<
           break;
         } catch (cause) {
           if (!(cause instanceof PlayerOperationError)) throw cause;
-          const recovery = recoveryRequest(session, request, cause.code);
+          const recovery = this.options.backend.canConvertPlayback?.(session.id) === false ? undefined : recoveryRequest(session, request, cause.code);
           if (!stillWanted() || !recovery) throw cause;
           await releaseOwned();
           if (!stillWanted()) throw new DOMException('Playback operation was cancelled.', 'AbortError');

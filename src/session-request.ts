@@ -73,6 +73,8 @@ function refusalStatus(error: unknown): number | undefined {
 export function escalatePreparation(request: PlaybackStart, error: unknown): PlaybackStart | undefined {
   const status = refusalStatus(error);
   if (status !== 406) return undefined;
+  // A definitive source-format refusal cannot be repaired by converting its delivery.
+  if (error instanceof Error && 'code' in error && error.code === 'source_format_unsupported') return undefined;
   if (!request.managedOnly) return { ...request, managedOnly: true };
   if (!request.forceTranscode) return { ...request, managedOnly: true, forceTranscode: true };
   return undefined;

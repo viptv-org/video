@@ -44,6 +44,32 @@ function session(id: string, url: string, mode = 'managed', position = 0): Playb
 }
 
 describe('PlaybackSessionController', () => {
+  it('keeps an admitted local transport out of automatic server conversion', async () => {
+    const player = new FakePlayer();
+    player.failUrl = 'http://127.0.0.1/private-media';
+    player.failError = new PlayerOperationError('unsupported-format', 'Decoder refused this file');
+    const backend = {
+      startPlayback: vi.fn().mockResolvedValue(session('local', player.failUrl, 'direct')),
+      stopPlayback: vi.fn().mockResolvedValue(undefined),
+      canConvertPlayback: () => false,
+    };
+    const controller = new PlaybackSessionController({player,backend,capabilities});
+    await expect(controller.start({item,source})).rejects.toThrow('Decoder refused this file');
+    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
+    expect(backend.stopPlayback).toHaveBeenCalledWith('local');
+    player.failUrl = undefined;
+    await controller.start({item,source});
+    player.snapshot = {...player.snapshot,state:'error',error:{code:'unsupported-format',message:'Late decoder refusal'}};
+    expect(await controller.recoverPlayback(player.snapshot)).toBe(false);
+    expect(backend.startPlayback).toHaveBeenCalledTimes(2);
+  });
+  it('does not escalate a definitive source-format refusal', async () => {
+    const backend = {startPlayback:vi.fn().mockRejectedValue(Object.assign(new TvApiError(406,'Unsupported source'),{code:'source_format_unsupported'})),stopPlayback:vi.fn()};
+    const controller = new PlaybackSessionController({player:new FakePlayer(),backend,capabilities});
+    await expect(controller.start({item,source})).rejects.toThrow('Unsupported source');
+    expect(backend.startPlayback).toHaveBeenCalledTimes(1);
+  });
+
   it('retires desktop sources before preparation and keeps a refused replacement empty', async () => {
     const player = new FakePlayer();
     const backend = {

@@ -93,6 +93,8 @@ describe('TauriNativeAdapter', () => {
     expect(player.snapshot.error).toBeNull();
     plugin.statsSnapshot = baseSnapshot({ presentedFrames: 10, playing: true });
     await vi.advanceTimersByTimeAsync(300);
+    expect(player.snapshot.diagnostics?.presentedFrames).toBe(10);
+    expect(player.snapshot.diagnostics?.frameTiming).toBe('verified');
     rejectStats = true;
     await vi.advanceTimersByTimeAsync(300);
     expect(plugin.openedPayloads).toHaveLength(2);
