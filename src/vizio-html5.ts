@@ -81,6 +81,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
   private hls: Hls | null = null;
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
   private expectedVideo = true;
+  private startupDeadline?: number;
   private nativeHlsFallback: ((stalled?: boolean) => boolean) | null = null;
   private pauseRequested = false;
   private activeKind: OpenPlayerRequest['kind'] | null = null;
@@ -124,6 +125,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
     this.invalidateSession();
     this.pauseRequested = request.paused ?? false;
     this.expectedVideo = request.expectedVideo !== false;
+    this.startupDeadline = request.startupBudgetMs === undefined ? undefined : performance.now() + Math.max(0, Math.min(120_000, request.startupBudgetMs));
     const sessionId = this.startSession(request.kind);
     this.update(sessionId, { diagnostics: { decision: request.deliveryDecision, engine: 'native-html', networkTransport: new URL(request.url, location.href).pathname.startsWith('/media/') ? 'browser-proxy' : 'direct', transport: /\.m3u8(?:[?#]|$)/i.test(request.url) ? 'hls' : 'file' }, volume: { level: this.media.volume ?? 1, muted: this.media.muted ?? false } });
     this.activeKind = request.kind;
@@ -218,7 +220,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
         this.fail(sessionId, error.toFailure());
         reject(error);
       };
-      openingTimer = setTimeout(() => failOpen(new PlayerOperationError('prepare-failed', 'The selected source did not become ready in time.')), 20000);
+      openingTimer = setTimeout(() => failOpen(new PlayerOperationError('prepare-failed', 'The selected source did not become ready in time.')), this.startupDeadline === undefined ? 20000 : Math.max(1, Math.min(20000, this.startupDeadline - performance.now())));
       const startMse = () => {
         this.update(sessionId, { diagnostics: { decision: request.deliveryDecision, engine: 'hls.js', networkTransport: 'browser-proxy', transport: 'hls' } });
         if (!Hls.isSupported()) throw new PlayerOperationError('unsupported-format', 'This browser cannot play HLS. Native HLS or MediaSource support is required.');
@@ -291,7 +293,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
               this.media.addEventListener('loadedmetadata', onReady);
               this.media.addEventListener('error', onFailure);
               this.pendingOpen = { sessionId, cancel: () => { cleanup(); resolve(); } };
-              openingTimer = setTimeout(() => failOpen(new PlayerOperationError('prepare-failed', 'The selected source did not become ready in time.')), 20000);
+              openingTimer = setTimeout(() => failOpen(new PlayerOperationError('prepare-failed', 'The selected source did not become ready in time.')), this.startupDeadline === undefined ? 20000 : Math.max(1, Math.min(20000, this.startupDeadline - performance.now())));
               try { startMse(); }
               catch (cause) { failOpen(cause instanceof PlayerOperationError ? cause : new PlayerOperationError('prepare-failed', 'The browser could not prepare the selected source.', cause)); }
               return true;
@@ -428,11 +430,11 @@ export class VizioHtml5Adapter extends SessionPlayer {
     this.firstFrameTimer = setTimeout(() => {
       this.firstFrameTimer = undefined;
       if (!this.isCurrent(sessionId) || this.pauseRequested || this.hasVideoFrame() || this.snapshot.state === 'error') return;
-      if (this.nativeHlsFallback?.(true)) return;
+      if ((this.startupDeadline === undefined || performance.now() < this.startupDeadline) && this.nativeHlsFallback?.(true)) return;
       this.nativeHlsFallback = null;
       this.fail(sessionId, { code: 'unsupported-format', message: 'The selected source did not produce a decoded video frame.' });
       this.media.pause(); this.destroyHls();
-    }, 8000);
+    }, this.startupDeadline === undefined ? 8000 : Math.max(1, this.startupDeadline - performance.now()));
   }
   /** The seek bar's length: the server total, raised only by an original file. */
   private titleDuration(): number | null {

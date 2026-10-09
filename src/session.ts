@@ -353,6 +353,7 @@ export class PlaybackSessionController<
     restoreOnCancellation: () => boolean = () => false,
     previousState?: { position: number; paused: boolean },
   ): Promise<PlaybackControllerActive<Item, Source>> {
+    const startupStarted = performance.now();
     const wasPaused = previousState?.paused ?? this.options.player.snapshot.state === 'paused';
     const previousPosition = previousState?.position ?? this.options.player.snapshot.time.positionSeconds;
     this.publish({ state: previous ? 'replacing' : 'opening', active: previous, error: null });
@@ -381,7 +382,8 @@ export class PlaybackSessionController<
     try {
       for (;;) {
         try {
-          const budget = await this.options.backend.remainingStartupBudget?.(session.id);
+          const suppliedBudget = await this.options.backend.remainingStartupBudget?.(session.id);
+          const budget = suppliedBudget === undefined ? undefined : Math.min(suppliedBudget, 120_000 - (performance.now() - startupStarted));
           if (budget !== undefined && (!Number.isFinite(budget) || budget <= 0)) throw new PlayerOperationError('prepare-failed', 'Playback startup timed out.');
           await this.options.player.open({...adapterRequest(session, itemKind(intent.item), request.position ?? 0, wasPaused), startupBudgetMs: budget});
           break;

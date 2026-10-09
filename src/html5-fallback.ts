@@ -25,6 +25,7 @@ export class Html5FallbackAdapter implements Player {
   private generation = 0;
   private request?: OpenPlayerRequest;
   private opening = false;
+  private startupDeadline?: number;
   private recovering = false;
   private fallbackReason?: string;
   private volume = 1;
@@ -44,6 +45,7 @@ export class Html5FallbackAdapter implements Player {
 
   async open(request: OpenPlayerRequest): Promise<void> {
     const generation = ++this.generation;
+    this.startupDeadline = request.startupBudgetMs === undefined ? undefined : performance.now() + Math.max(0, Math.min(120_000, request.startupBudgetMs));
     this.cancelOpening?.(); this.cancelOpening = undefined;
     this.clearSubscription(); this.unsubscribe = undefined;
     const previous = this.active; this.active = undefined; await previous?.dispose();
@@ -107,7 +109,9 @@ export class Html5FallbackAdapter implements Player {
       } else player = new VizioHtml5Adapter(this.media);
       this.attach(player, generation, path === 'bunny');
       try {
-        await withTimeout(Promise.race([player.open(request), new Promise<void>(resolve => { this.cancelOpening = resolve; })]), 15000);
+        const remaining = this.startupDeadline === undefined ? undefined : this.startupDeadline - performance.now();
+        if (remaining !== undefined && remaining <= 0) throw new PlayerOperationError('connection-failed', 'Playback startup timed out.', undefined, 'network');
+        await withTimeout(Promise.race([player.open({...request, startupBudgetMs: remaining}), new Promise<void>(resolve => { this.cancelOpening = resolve; })]), remaining === undefined ? 15000 : Math.max(1, Math.min(15000, remaining)));
         return;
       } catch (cause) {
         if (generation !== this.generation) return;
