@@ -83,6 +83,7 @@ export interface PlaybackBackend {
   stopPlayback(sessionId: string): Promise<void>;
   /** A local transport can explicitly forbid server conversion for its admitted session. */
   canConvertPlayback?(sessionId: string): boolean;
+  remainingStartupBudget?(sessionId: string): Promise<number | undefined>;
 }
 
 export interface PlaybackSessionControllerOptions {
@@ -380,7 +381,9 @@ export class PlaybackSessionController<
     try {
       for (;;) {
         try {
-          await this.options.player.open(adapterRequest(session, itemKind(intent.item), request.position ?? 0, wasPaused));
+          const budget = await this.options.backend.remainingStartupBudget?.(session.id);
+          if (budget !== undefined && (!Number.isFinite(budget) || budget <= 0)) throw new PlayerOperationError('prepare-failed', 'Playback startup timed out.');
+          await this.options.player.open({...adapterRequest(session, itemKind(intent.item), request.position ?? 0, wasPaused), startupBudgetMs: budget});
           break;
         } catch (cause) {
           if (!(cause instanceof PlayerOperationError)) throw cause;

@@ -866,7 +866,7 @@ export class TauriNativeAdapter extends SessionPlayer {
       this.firstFrameTimer = undefined;
       if (!this.isCurrent(sessionId) || (this.native?.videoWidth ?? 0) > 0 || this.snapshot.state === 'error') return;
       this.failNative(sessionId, { code: 'prepare-failed', message: 'The native engine did not produce a video frame before startup timed out.' });
-    }, FIRST_FRAME_TIMEOUT_MS);
+    }, request.startupBudgetMs === undefined ? FIRST_FRAME_TIMEOUT_MS : Math.max(1, Math.min(120_000, request.startupBudgetMs)));
   }
 
   private clearFirstFrameWatchdog(): void {

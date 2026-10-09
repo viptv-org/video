@@ -179,6 +179,8 @@ export interface OpenPlayerRequest {
   readonly startAtSeconds?: number;
   /** Explicit audio-only consumers may opt out of first-video-frame validation. */
   readonly expectedVideo?: boolean;
+  /** Remaining caller-owned startup budget; adapters do not restart it. */
+  readonly startupBudgetMs?: number;
   /** Absolute title time represented by native position zero for managed output. */
   readonly timelineOffsetSeconds?: number;
   /**
