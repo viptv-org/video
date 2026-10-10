@@ -241,6 +241,19 @@ it('does not reject a decoded first frame or an explicitly audio-only source', a
   } finally { vi.useRealTimers(); }
 });
 
+it('publishes measured decoded frames separately from metadata readiness', async () => {
+  const media = new Media(); media.nativeHls = true;
+  let frames = 0;
+  Object.defineProperty(media, 'videoWidth', { value: 1920 });
+  Object.defineProperty(media, 'getVideoPlaybackQuality', { value: () => ({ totalVideoFrames: frames }) });
+  const player = new VizioHtml5Adapter(media);
+  const opening = player.open({ url: url(), kind: 'vod' });
+  media.emit('loadedmetadata'); await opening;
+  expect(player.snapshot.diagnostics?.presentedFrames).toBe(0);
+  frames = 3; media.emit('timeupdate');
+  expect(player.snapshot.diagnostics?.presentedFrames).toBe(3);
+  await player.dispose();
+});
 it('keeps the caller startup deadline through metadata and first-frame waiting', async () => {
   vi.useFakeTimers();
   try {

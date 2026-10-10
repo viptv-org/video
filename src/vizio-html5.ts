@@ -446,7 +446,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
     if (this.hasVideoFrame()) this.clearFirstFrameWatchdog();
     const sessionId = this.snapshot.sessionId;
     if (!this.isCurrent(sessionId)) return;
-    this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight } : undefined, time: { positionSeconds: this.timelineOffsetSeconds + this.media.currentTime, durationSeconds: this.titleDuration() }, tracks: this.tracks() });
+    this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight, presentedFrames: this.media.getVideoPlaybackQuality?.().totalVideoFrames } : undefined, time: { positionSeconds: this.timelineOffsetSeconds + this.media.currentTime, durationSeconds: this.titleDuration() }, tracks: this.tracks() });
   }
 
   private onCanPlay(): void { this.onMetadata(); }
@@ -474,7 +474,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
   private onTimeUpdate(): void {
     if (this.hasVideoFrame()) this.clearFirstFrameWatchdog();
     const sessionId = this.snapshot.sessionId;
-    this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight } : undefined, time: this.publishableTime() });
+    this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight, presentedFrames: this.media.getVideoPlaybackQuality?.().totalVideoFrames } : undefined, time: this.publishableTime() });
   }
   /**
    * `progress` fires while data downloads even when `timeupdate` is silent
