@@ -13,6 +13,7 @@ export * from './vizio-html5';
 export * from './html5-fallback';
 export * from './tauri-native';
 export * from './platform-profiles';
+export { parseWebVtt, type CaptionCue } from './captions';
 
 export interface CreatePlayerOptions {
   readonly platform: PlayerPlatform;
