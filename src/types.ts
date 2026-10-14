@@ -371,6 +371,8 @@ export interface PlaybackSessionView {
   readonly videoMode: string;
   readonly audioMode: string;
   readonly position: number;
+  /** Original-media clock already applied by a gateway cut; player time starts at zero. */
+  readonly timelineOffsetSeconds?: number;
   readonly live: boolean;
   readonly duration: number;
   readonly audioTracks: readonly PlaybackMediaTrack[];
