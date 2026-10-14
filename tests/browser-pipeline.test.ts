@@ -34,7 +34,9 @@ describe('browser delivery decisions', () => {
   });
   it('preserves sidecar timeline offsets and renders cue markup as plain text', () => {
     const cues = parseWebVtt('WEBVTT\n\n1\n00:00:01.000 --> 00:00:03.000 align:center\n<b>Hello</b>\n', 60);
-    expect(cues).toEqual([{ start: 61, end: 63, text: 'Hello\n' }]);
+    expect(cues).toEqual([{ start: 61, end: 63, text: 'Hello' }]);
+    expect(parseWebVtt('WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nFirst\nSecond\n'))
+      .toEqual([{ start: 1, end: 3, text: 'First\nSecond' }]);
     expect(parseWebVtt('WEBVTT\n\n00:00:03.000 --> 00:00:01.000\nInvalid')).toEqual([]);
     expect(parseWebVtt('WEBVTT\n\n-00:00:01.000 --> 00:00:01.000\nA &amp; B', 60)).toEqual([{ start: 59, end: 61, text: 'A & B' }]);
   });

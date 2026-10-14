@@ -16,7 +16,7 @@ export function parseWebVtt(text: string, offset = 0): CaptionCue[] {
     const times = lines[index].match(/(-?[\d:.]+)\s+-->\s+(-?[\d:.]+)/);
     if (!times) continue;
     const start = clock(times[1]) + offset, end = clock(times[2]) + offset;
-    if (Number.isFinite(start) && Number.isFinite(end) && end > start) cues.push({ start, end, text: cueText(lines.slice(index + 1).join('\n')).slice(0, 4096) });
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) cues.push({ start, end, text: cueText(lines.slice(index + 1).join('\n').replace(/\n+$/, '')).slice(0, 4096) });
     if (cues.length >= 4096) break;
   }
   return cues;
