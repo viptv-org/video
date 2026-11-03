@@ -5,6 +5,14 @@ Release numbering follows the
 
 ## Unreleased
 
+- Preserve explicit gateway cut clocks and original MP4 seek positions:
+  `PlaybackSessionView.timelineOffsetSeconds` carries an original-media clock a
+  gateway cut already applied, so a managed HLS delivery opens at decoder
+  position zero, a full gateway MP4 seeks once without adding an offset on top,
+  and live playback stays on its live timeline instead of a resume position.
+- Trim trailing sidecar terminators in the WebVTT parser while retaining
+  multiline caption text, and export the shared normalized parser as
+  `parseWebVtt` with its `CaptionCue` type.
 - Confirm transient native seek acknowledgments against bounded engine stats before reporting an origin replay.
 - Add optional `Player.setPictureMode` for native Fit/Fill presentation, retaining Fill across source replacement.
 
