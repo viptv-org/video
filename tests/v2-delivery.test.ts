@@ -11,6 +11,22 @@ const gateway: PlaybackSessionView = {
 const start: PlaybackStart = { streamId: 'source', position: 120, managedOnly: true,
   capabilities: { maxWidth: 3840, maxHeight: 2160, h264: true, hevc: true, aac: true, directPlay: true, directUrls: true, hevcSdr: true } };
 
+it('uses an explicit HLS cut offset while the returned decoder position is zero', () => {
+  expect(adapterRequest({ ...gateway, position: 0, timelineOffsetSeconds: 48.6 }, 'vod', 48.6, true))
+    .toMatchObject({ startAtSeconds: 0, timelineOffsetSeconds: 48.6, paused: true, deliveryMode: 'managed' });
+});
+
+it('seeks a full gateway MP4 once without adding an original-media clock offset', () => {
+  expect(adapterRequest({ ...gateway, format: 'mp4', position: 48.6, timelineOffsetSeconds: 0 }, 'vod', 48.6, false))
+    .toMatchObject({ startAtSeconds: 48.6, timelineOffsetSeconds: 0, adoptEngineDuration: true,
+      deliveryMode: 'managed', authorization: undefined });
+});
+
+it('keeps live playback at its live timeline rather than a VOD resume position', () => {
+  expect(adapterRequest({ ...gateway, live: true }, 'live', 48.6, false))
+    .toMatchObject({ startAtSeconds: 0, timelineOffsetSeconds: 0, timelineDurationSeconds: undefined });
+});
+
 it('does not confuse gateway processing mode direct with original delivery', () => {
   expect(adapterRequest(gateway, 'vod', 135, true)).toMatchObject({
     startAtSeconds: 15, timelineOffsetSeconds: 120, timelineDurationSeconds: 3600,

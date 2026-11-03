@@ -22,18 +22,20 @@ export function isOriginalDelivery(session: PlaybackSessionView): boolean {
 
 export function adapterRequest(session: PlaybackSessionView, kind: PlaybackKind, position: number, paused: boolean): Parameters<Player['open']>[0] {
   const direct = isOriginalDelivery(session);
-  const deliveryStart = direct ? 0 : Math.max(0, session.position);
+  const deliveryStart = kind === 'live' || direct ? 0
+    : Math.max(0, session.timelineOffsetSeconds ?? session.position);
+  const originalClock = direct || session.timelineOffsetSeconds === 0 && session.format === 'mp4';
   return {
     preferredAudioLanguage: session.preferredAudioLanguage,
     preferredSubtitleLanguage: session.preferredSubtitleLanguage,
     url: session.url,
     kind,
-    startAtSeconds: direct ? position : Math.max(0, position - deliveryStart),
+    startAtSeconds: kind === 'live' ? 0 : Math.max(0, position - deliveryStart),
     timelineOffsetSeconds: deliveryStart,
     // A managed delivery is a rolling window; only the session knows how long
     // the title is. Direct original files may refine it with their own length.
     timelineDurationSeconds: kind === 'live' || !(session.duration > 0) ? undefined : session.duration,
-    adoptEngineDuration: direct,
+    adoptEngineDuration: originalClock,
     deliveryMode: direct ? 'direct' : 'managed',
     deliveryFormat: session.format,
     deliveryDecision: ['encode', 'transcode'].includes(session.videoMode) ? 'video-conversion'
