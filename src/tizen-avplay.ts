@@ -1,6 +1,7 @@
 import { SessionPlayer } from './session';
 import { checkedSourceAuthorization } from './source-authorization';
 import { nonNegative } from './primitives';
+import { subtitleIntent } from './subtitle-intent';
 import {
   type OpenPlayerRequest,
   type PlayerErrorCode,
@@ -80,6 +81,8 @@ export class TizenAvplayAdapter extends SessionPlayer {
   private timelineDurationSeconds: number | undefined;
   private adoptEngineDuration = false;
   private observedTitleDuration: number | null = null;
+  private subtitleRequest?: OpenPlayerRequest;
+  private pauseRequested = false;
 
   constructor(private readonly avplay: AvplayManager = resolveAvplay()) {
     super();
@@ -101,6 +104,8 @@ export class TizenAvplayAdapter extends SessionPlayer {
     this.timelineDurationSeconds = request.timelineDurationSeconds;
     this.adoptEngineDuration = request.adoptEngineDuration === true;
     this.observedTitleDuration = null;
+    this.subtitleRequest = request;
+    this.pauseRequested = request.paused === true;
 
     try {
       this.avplay.open(request.url);
@@ -132,8 +137,11 @@ export class TizenAvplayAdapter extends SessionPlayer {
 
   async play(): Promise<void> {
     const sessionId = this.activeSessionOrThrow();
+    this.pauseRequested = false;
+    if (this.snapshot.state === 'playing') return;
     try {
       this.avplay.play();
+      this.applySubtitleIntent(sessionId);
       this.update(sessionId, { state: 'playing', error: null });
     } catch (cause) {
       this.throwOperation(sessionId, 'invalid-state', 'AVPlay could not resume playback.', cause);
@@ -142,6 +150,9 @@ export class TizenAvplayAdapter extends SessionPlayer {
 
   async pause(): Promise<void> {
     const sessionId = this.activeSessionOrThrow();
+    this.pauseRequested = true;
+    // A prepared paused open is still READY natively; pause() is invalid there.
+    if (this.snapshot.state === 'paused') return;
     try {
       this.avplay.pause();
       this.update(sessionId, { state: 'paused' });
@@ -177,6 +188,7 @@ export class TizenAvplayAdapter extends SessionPlayer {
   }
 
   async stop(): Promise<void> {
+    this.subtitleRequest = undefined;
     this.cancelPendingOpen();
     this.invalidateSession();
     try { this.avplay.stop(); } catch { /* stop is state-dependent on AVPlay */ }
@@ -202,6 +214,7 @@ export class TizenAvplayAdapter extends SessionPlayer {
   }
 
   async selectTextTrack(trackId: string | null): Promise<void> {
+    this.subtitleRequest = undefined;
     const sessionId = this.activeSessionOrThrow();
     try {
       if (trackId === null) {
@@ -232,11 +245,12 @@ export class TizenAvplayAdapter extends SessionPlayer {
     });
     const complete = () => {
       if (!this.isCurrent(sessionId)) return;
-      if (request.paused) {
+      if (this.pauseRequested) {
         this.update(sessionId, { state: 'paused' });
       } else {
         try {
           this.avplay.play();
+          this.applySubtitleIntent(sessionId);
           this.update(sessionId, { state: 'playing' });
         } catch (cause) {
           this.preparationFailed(sessionId, cause);
@@ -266,13 +280,21 @@ export class TizenAvplayAdapter extends SessionPlayer {
     return {
       onbufferingstart: () => this.update(sessionId, { state: 'buffering' }),
       onbufferingcomplete: () => {
-        if (this.snapshot.state === 'buffering') this.update(sessionId, { state: 'playing' });
+        if (this.snapshot.state === 'buffering') this.update(sessionId, { state: this.pauseRequested ? 'paused' : 'playing' });
       },
       // AVPlay's documented callback value is the event's timeline fact. Do not
       // replace it with a second engine read that can lag behind the callback.
-      oncurrentplaytime: (milliseconds) => this.update(sessionId, {
-        time: { positionSeconds: this.timelineOffsetSeconds + milliseconds / 1000, durationSeconds: this.durationSeconds() },
-      }),
+      oncurrentplaytime: (milliseconds) => {
+        if (!this.isCurrent(sessionId)) return;
+        try { this.applySubtitleIntent(sessionId); }
+        catch (cause) {
+          this.fail(sessionId, operationFailure('unsupported-operation', 'AVPlay could not select the requested subtitles.', cause).toFailure());
+          return;
+        }
+        this.update(sessionId, {
+          time: { positionSeconds: this.timelineOffsetSeconds + milliseconds / 1000, durationSeconds: this.durationSeconds() },
+        });
+      },
       onstreamcompleted: () => this.update(sessionId, { state: 'ended' }),
       onerror: (code) => this.fail(sessionId, operationFailure('connection-failed', `AVPlay error: ${code}`).toFailure()),
       onerrormsg: (code, message) => this.fail(sessionId, operationFailure('connection-failed', `AVPlay error ${code}: ${message}`).toFailure()),
@@ -313,6 +335,19 @@ export class TizenAvplayAdapter extends SessionPlayer {
 
   private findTrack(kind: 'audio' | 'text', id: string): PlayerTrack | undefined {
     return this.snapshot.tracks[kind].find((track) => track.id === id && track.available);
+  }
+
+  private applySubtitleIntent(sessionId: number): void {
+    const request = this.subtitleRequest;
+    if (!request || !this.isCurrent(sessionId)) return;
+    const tracks = tracksFromAvplay(this.avplay.getTotalTrackInfo());
+    const id = subtitleIntent(request, tracks.text);
+    if (id === undefined) return;
+    this.subtitleRequest = undefined;
+    // HLS TEXT selection is allowed in PLAYING/PAUSED, not READY.
+    if (id !== null) this.avplay.setSelectTrack('TEXT', parseTrackIndex(id));
+    this.avplay.setSilentSubtitle(id === null);
+    this.update(sessionId, { tracks: { ...tracks, selectedTextId: id } });
   }
 
   private throwOperation(sessionId: number, code: PlayerErrorCode, message: string, cause: unknown): never {
@@ -362,7 +397,7 @@ function tracksFromAvplay(infos: readonly AvplayTrackInfo[]): PlayerTracks {
     if (info.type !== 'AUDIO' && info.type !== 'TEXT') continue;
     const kind = info.type === 'AUDIO' ? 'audio' : 'text';
     const metadata = parseExtraInfo(info.extra_info);
-    const language = readString(metadata, 'language') ?? readString(metadata, 'lang');
+    const language = readString(metadata, 'language') ?? readString(metadata, 'track_lang') ?? readString(metadata, 'lang');
     const codec = readString(metadata, 'fourCC') ?? readString(metadata, 'codec');
     const label = [language, codec].filter(Boolean).join(' · ') || `${kind === 'audio' ? 'Audio' : 'Subtitle'} ${info.index}`;
     const track: PlayerTrack = { id: `${kind}:${info.index}`, label, language, available: true };

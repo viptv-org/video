@@ -5,6 +5,7 @@ import { supportsNativeHls } from './browser-capabilities';
 import { SessionPlayer } from './session';
 import { mediaFailure } from './browser-policy';
 import { nonNegative } from './primitives';
+import { subtitleIntent } from './subtitle-intent';
 import {
   type OpenPlayerRequest,
   PlayerOperationError,
@@ -38,7 +39,10 @@ export interface HtmlMediaLike {
   readonly paused: boolean;
   readonly ended: boolean;
   readonly error: { readonly code: number; readonly message?: string } | null;
-  readonly textTracks?: ArrayLike<HtmlTextTrack>;
+  readonly textTracks?: ArrayLike<HtmlTextTrack> & {
+    addEventListener?(type: string, listener: () => void): void;
+    removeEventListener?(type: string, listener: () => void): void;
+  };
   canPlayType?(type: string): string;
   play(): Promise<void>;
   pause(): void;
@@ -89,6 +93,8 @@ export class VizioHtml5Adapter extends SessionPlayer {
   private timelineDurationSeconds: number | undefined;
   private adoptEngineDuration = false;
   private observedTitleDuration: number | null = null;
+  private subtitleRequest?: OpenPlayerRequest;
+  private readonly textTrackAdded = () => this.onMetadata();
   private pendingOpen: { readonly sessionId: number; readonly cancel: () => void } | null = null;
 
   constructor(private readonly media: HtmlMediaLike) {
@@ -107,6 +113,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
       error: () => this.onError(),
     };
     for (const [event, handler] of Object.entries(this.handlers)) this.media.addEventListener(event, handler);
+    this.media.textTracks?.addEventListener?.('addtrack', this.textTrackAdded);
   }
 
   open(request: OpenPlayerRequest): Promise<void> {
@@ -133,6 +140,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
     this.timelineDurationSeconds = request.timelineDurationSeconds;
     this.adoptEngineDuration = request.adoptEngineDuration === true;
     this.observedTitleDuration = null;
+    this.subtitleRequest = request;
     this.media.pause();
     this.media.crossOrigin = 'anonymous';
     return new Promise<void>((resolve, reject) => {
@@ -240,6 +248,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
           fetchSetup: (context, init) => sessionMediaRequest(url.href, context.url, init),
         });
         this.hls = hls;
+        if (request.textTrackId === null) hls.subtitleDisplay = false;
         // Consecutive non-fatal network failures stall the video silently
         // (buffer drains, spinner forever). hls.js keeps retrying internally,
         // so three in a row with no successful load in between escalates to a
@@ -250,6 +259,11 @@ export class VizioHtml5Adapter extends SessionPlayer {
           this.update(sessionId, { tracks: this.tracks(), qualities: (hls.levels ?? []).map((level, index) => ({
             id: `hls:${index}`, label: `${level.height}p`, width: level.width, height: level.height, bitrate: level.bitrate,
           })), selectedQualityId: hls.autoLevelEnabled ? 'auto' : `hls:${hls.currentLevel}` });
+          // hls.js finishes its own default selection after dispatching the
+          // track-list event. Apply the server intent once that stack returns.
+          void Promise.resolve().then(() => {
+            if (this.isCurrent(sessionId) && this.hls === hls) this.applySubtitleIntent();
+          });
         };
         hls.on(Hls.Events.MANIFEST_PARSED, publishTracks);
         hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, publishTracks);
@@ -347,6 +361,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
   }
 
   async stop(): Promise<void> {
+    this.subtitleRequest = undefined;
     this.nativeHlsFallback = null;
     this.clearFirstFrameWatchdog();
     this.cancelPendingOpen();
@@ -361,6 +376,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
 
   async dispose(): Promise<void> {
     await this.stop();
+    this.media.textTracks?.removeEventListener?.('addtrack', this.textTrackAdded);
     for (const [event, handler] of Object.entries(this.handlers)) this.media.removeEventListener(event, handler);
     this.terminal('disposed');
   }
@@ -394,6 +410,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
   }
 
   async selectTextTrack(trackId: string | null): Promise<void> {
+    this.subtitleRequest = undefined;
     const sessionId = this.activeSessionOrThrow();
     if (this.hls) {
       const index = trackId === null ? -1 : Number(/^hls-text:(\d+)$/.exec(trackId)?.[1]);
@@ -446,10 +463,30 @@ export class VizioHtml5Adapter extends SessionPlayer {
     if (this.hasVideoFrame()) this.clearFirstFrameWatchdog();
     const sessionId = this.snapshot.sessionId;
     if (!this.isCurrent(sessionId)) return;
+    this.applySubtitleIntent();
     this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight, presentedFrames: this.media.getVideoPlaybackQuality?.().totalVideoFrames } : undefined, time: { positionSeconds: this.timelineOffsetSeconds + this.media.currentTime, durationSeconds: this.titleDuration() }, tracks: this.tracks() });
   }
 
   private onCanPlay(): void { this.onMetadata(); }
+
+  private applySubtitleIntent(): void {
+    const request = this.subtitleRequest;
+    if (!request) return;
+    const tracks = this.tracks().text;
+    if (!tracks.length) return; // Native renditions can arrive after metadata.
+    const id = subtitleIntent(request, tracks);
+    if (id === undefined) return;
+    this.subtitleRequest = undefined;
+    // Selection is synchronous here; avoid an unobserved rejected promise.
+    if (this.hls) {
+      this.hls.subtitleTrack = id === null ? -1 : Number(id.slice('hls-text:'.length));
+      this.hls.subtitleDisplay = id !== null;
+    } else {
+      for (const entry of selectableTextTracks(this.media))
+        entry.track.mode = entry.id === id ? 'showing' : 'disabled';
+    }
+    this.update(this.snapshot.sessionId, { tracks: this.tracks() });
+  }
   private onPlay(): void {
     if (this.media.error || this.snapshot.state === 'error') return;
     const sessionId = this.snapshot.sessionId;

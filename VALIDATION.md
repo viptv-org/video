@@ -134,3 +134,21 @@ acknowledge actual rendering separately from endpoint readiness.
 
 Type checking, all 171 tests and the package build pass. These adapter/controller
 checks do not qualify peer acquisition, native hardware or production delivery.
+
+## TV subtitle intent and Samsung state transitions
+
+The TV client publishes server-selected output subtitles through
+`preferredSubtitleLanguage` and explicit `textTrackId: null` for Off. The HTML
+adapter now applies those at actual rendition readiness, including late native
+text tracks and hls.js's post-event default-selection ordering. Manual changes
+supersede the initial intent. Native metadata tracks retain their indices and
+are excluded from selectable subtitles. Samsung's documented `track_lang` is
+recognized; HLS TEXT selection waits until PLAYING/PAUSED, and confirming Play
+or Pause after an open never repeats an invalid SDK transition. Paused intent
+survives buffering callbacks. Initial paused AVPlay preparation remains READY
+natively until explicit Play.
+
+Typecheck, package build and all 181 single-fork tests pass. New checks include
+late native subtitles, explicit Off, output versus input track indices, ISO
+language aliases and Samsung state-dependent commands. These tests mock the
+external SDK boundary; they do not certify physical Samsung or LG playback.
