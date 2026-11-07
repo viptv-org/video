@@ -94,6 +94,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
   private adoptEngineDuration = false;
   private observedTitleDuration: number | null = null;
   private subtitleRequest?: OpenPlayerRequest;
+  private subtitleTimer?: ReturnType<typeof setTimeout>;
   private readonly textTrackAdded = () => this.onMetadata();
   private pendingOpen: { readonly sessionId: number; readonly cancel: () => void } | null = null;
 
@@ -117,6 +118,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
   }
 
   open(request: OpenPlayerRequest): Promise<void> {
+    clearTimeout(this.subtitleTimer);
     try { checkedMediaDelivery(request.url); }
     catch (error) { return Promise.reject(error); }
     if (hasSourceAuthorization(request.authorization)) {
@@ -171,6 +173,15 @@ export class VizioHtml5Adapter extends SessionPlayer {
           tracks: this.tracks(),
           error: null,
         });
+        if (!this.hls && request.preferredSubtitleLanguage && request.textTrackId !== null) {
+          clearTimeout(this.subtitleTimer);
+          this.subtitleTimer = setTimeout(() => {
+            // A native HLS MIME hint does not establish WebVTT rendition
+            // support. Retry the same URL with MSE if no text track appeared.
+            if (this.isCurrent(sessionId) && this.subtitleRequest && !this.hls && !this.tracks().text.length)
+              this.nativeHlsFallback?.(true);
+          }, 750);
+        }
         if (this.pauseRequested) {
           this.media.pause();
           this.pendingOpen = null;
@@ -361,6 +372,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
   }
 
   async stop(): Promise<void> {
+    clearTimeout(this.subtitleTimer);
     this.subtitleRequest = undefined;
     this.nativeHlsFallback = null;
     this.clearFirstFrameWatchdog();
@@ -410,6 +422,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
   }
 
   async selectTextTrack(trackId: string | null): Promise<void> {
+    clearTimeout(this.subtitleTimer);
     this.subtitleRequest = undefined;
     const sessionId = this.activeSessionOrThrow();
     if (this.hls) {
@@ -476,6 +489,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
     if (!tracks.length) return; // Native renditions can arrive after metadata.
     const id = subtitleIntent(request, tracks);
     if (id === undefined) return;
+    clearTimeout(this.subtitleTimer);
     this.subtitleRequest = undefined;
     // Selection is synchronous here; avoid an unobserved rejected promise.
     if (this.hls) {

@@ -152,3 +152,11 @@ Typecheck, package build and all 181 single-fork tests pass. New checks include
 late native subtitles, explicit Off, output versus input track indices, ISO
 language aliases and Samsung state-dependent commands. These tests mock the
 external SDK boundary; they do not certify physical Samsung or LG playback.
+
+A real browser probe also exposed a native-HLS subtitle gap: a MIME-supported
+stream can decode video while exposing no requested text rendition. After a
+bounded native track-discovery grace, the HTML adapter retries that same URL
+once with hls.js where MSE is available, retaining position and paused intent.
+Native playback remains preferred when its requested track is exposed. The
+language helper now lives in the lightweight primitives module so native hosts
+do not acquire browser demuxer imports through subtitle presentation.

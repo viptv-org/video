@@ -1,5 +1,5 @@
 import type { OpenPlayerRequest, PlayerTrack } from './types';
-import { mediaLanguage } from './media-tracks';
+import { mediaLanguage } from './primitives';
 
 /** Presentation of the selected output; input indices belong to the server. */
 export function subtitleIntent(request: OpenPlayerRequest, tracks: readonly PlayerTrack[]): string | null | undefined {

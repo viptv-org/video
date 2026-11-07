@@ -26,6 +26,25 @@ class Media implements HtmlMediaLike {
 const url = () => `${window.location.origin}/media/session/cap/index.m3u8`;
 beforeEach(() => { hls.supported = true; hls.instances.length = 0; });
 describe('HTML HLS delivery', () => {
+  it('retries the same HLS URL when native video exposes no requested subtitle rendition', async () => {
+    vi.useFakeTimers();
+    const media=new Media();media.nativeHls=true;media.currentTime=0;
+    const player=new VizioHtml5Adapter(media);
+    try {
+      const opening=player.open({url:url(),kind:'vod',paused:true,preferredSubtitleLanguage:'en'});
+      media.emit('loadedmetadata');await opening;
+      media.currentTime=2;
+      await vi.advanceTimersByTimeAsync(750);
+      expect(hls.instances).toHaveLength(1);
+      expect(hls.instances[0].loadSource).toHaveBeenCalledWith(url());
+      media.emit('loadedmetadata');
+      expect(player.snapshot.time.positionSeconds).toBe(2);
+      expect(player.snapshot.state).toBe('paused');
+      await player.stop();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(hls.instances).toHaveLength(1);
+    } finally { await player.dispose();vi.useRealTimers(); }
+  });
   it('prefers native HLS even when MSE is available', async () => {
     const media = new Media(); media.nativeHls = true;
     const player = new VizioHtml5Adapter(media);
