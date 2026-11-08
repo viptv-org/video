@@ -25,6 +25,31 @@ class Media implements HtmlMediaLike {
 }
 const url = () => `${window.location.origin}/media/session/cap/index.m3u8`;
 beforeEach(() => { hls.supported = true; hls.instances.length = 0; });
+
+it('accepts advancing decode-ready native playback when the host reports frame APIs as unreliable', async () => {
+ vi.useFakeTimers();const media=new Media();media.nativeHls=true;
+ Object.defineProperties(media,{videoWidth:{value:0},videoHeight:{value:0},readyState:{value:4},getVideoPlaybackQuality:{value:()=>({totalVideoFrames:0})}});
+ const player=new VizioHtml5Adapter(media,{unreliableFrameReporting:true});
+ try{
+  const opening=player.open({url:url(),kind:'vod'});media.emit('loadedmetadata');await opening;
+  media.paused=false;media.emit('playing');media.currentTime=.5;media.emit('timeupdate');
+  await vi.advanceTimersByTimeAsync(9000);
+  expect(player.snapshot.state).toBe('playing');expect(hls.instances).toHaveLength(0);
+  expect(player.snapshot.diagnostics).toMatchObject({presentedFrames:0,presentationEvidence:'media-progress'});
+ }finally{await player.dispose();vi.useRealTimers();}
+});
+
+it('does not accept metadata or a seek jump as native playback progress evidence', async () => {
+ vi.useFakeTimers();const media=new Media();media.nativeHls=true;
+ Object.defineProperties(media,{videoWidth:{value:0},readyState:{value:4},getVideoPlaybackQuality:{value:()=>({totalVideoFrames:0})}});
+ const player=new VizioHtml5Adapter(media,{unreliableFrameReporting:true});
+ try{
+  const opening=player.open({url:url(),kind:'vod',startupBudgetMs:1000});media.emit('loadedmetadata');await opening;
+  media.paused=false;media.emit('playing');media.emit('seeking');media.currentTime=30;media.emit('timeupdate');
+  await vi.advanceTimersByTimeAsync(1001);
+  expect(player.snapshot.state).toBe('error');expect(player.snapshot.diagnostics?.presentationEvidence).toBeUndefined();
+ }finally{await player.dispose();vi.useRealTimers();}
+});
 describe('HTML HLS delivery', () => {
   it('bounds native HLS startup without metadata and retries the same URL only once', async () => {
     vi.useFakeTimers();

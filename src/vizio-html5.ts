@@ -31,6 +31,8 @@ export interface HtmlMediaLike {
   muted?: boolean;
   readonly videoWidth?: number;
   readonly videoHeight?: number;
+  readonly readyState?: number;
+  readonly seeking?: boolean;
   getVideoPlaybackQuality?(): { readonly totalVideoFrames: number };
   currentTime: number;
   readonly duration: number;
@@ -84,6 +86,9 @@ export class VizioHtml5Adapter extends SessionPlayer {
   private hls: Hls | null = null;
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
   private expectedVideo = true;
+  private enginePlaying = false;
+  private frameProgressStart: number | undefined;
+  private frameProgressVerified = false;
   private startupDeadline?: number;
   private nativeHlsFallback: ((stalled?: boolean) => boolean) | null = null;
   private pauseRequested = false;
@@ -97,7 +102,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
   private readonly textTrackAdded = () => this.onMetadata();
   private pendingOpen: { readonly sessionId: number; readonly cancel: () => void } | null = null;
 
-  constructor(private readonly media: HtmlMediaLike) {
+  constructor(private readonly media: HtmlMediaLike, private readonly options: { unreliableFrameReporting?: boolean } = {}) {
     super();
     this.handlers = {
       volumechange: () => this.onVolume(),
@@ -106,7 +111,8 @@ export class VizioHtml5Adapter extends SessionPlayer {
       play: () => this.onPlay(),
       pause: () => this.onPause(),
       waiting: () => this.onWaiting(),
-      playing: () => this.onPlay(),
+      playing: () => this.onPlay(true),
+      seeking: () => { this.enginePlaying = false; this.frameProgressStart = undefined; },
       timeupdate: () => this.onTimeUpdate(),
       progress: () => this.onProgress(),
       ended: () => this.onEnded(),
@@ -133,6 +139,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
     this.invalidateSession();
     this.pauseRequested = request.paused ?? false;
     this.expectedVideo = request.expectedVideo !== false;
+    this.enginePlaying = false;this.frameProgressStart = undefined;this.frameProgressVerified = false;
     this.startupDeadline = request.startupBudgetMs === undefined ? undefined : performance.now() + Math.max(0, Math.min(120_000, request.startupBudgetMs));
     const sessionId = this.startSession(request.kind);
     this.update(sessionId, { diagnostics: { decision: request.deliveryDecision, engine: 'native-html', networkTransport: new URL(request.url, location.href).pathname.startsWith('/media/') ? 'browser-proxy' : 'direct', transport: /\.m3u8(?:[?#]|$)/i.test(request.url) ? 'hls' : 'file' }, volume: { level: this.media.volume ?? 1, muted: this.media.muted ?? false } });
@@ -462,7 +469,8 @@ export class VizioHtml5Adapter extends SessionPlayer {
   private clearFirstFrameWatchdog(): void { clearTimeout(this.firstFrameTimer); this.firstFrameTimer = undefined; }
   private hasVideoFrame(): boolean {
     const frames = this.media.getVideoPlaybackQuality?.().totalVideoFrames;
-    return (this.media.videoWidth ?? 0) > 0 && (frames === undefined || frames > 0);
+    return ((this.media.videoWidth ?? 0) > 0 && (frames === undefined || frames > 0)) ||
+      (this.options.unreliableFrameReporting === true && this.frameProgressVerified);
   }
   private watchFirstFrame(sessionId: number): void {
     if (!this.expectedVideo || this.pauseRequested || this.media.videoWidth === undefined || this.hasVideoFrame() || this.firstFrameTimer) return;
@@ -510,7 +518,7 @@ export class VizioHtml5Adapter extends SessionPlayer {
     }
     this.update(this.snapshot.sessionId, { tracks: this.tracks() });
   }
-  private onPlay(): void {
+  private onPlay(observed = false): void {
     if (this.media.error || this.snapshot.state === 'error') return;
     const sessionId = this.snapshot.sessionId;
     if (this.pauseRequested) {
@@ -518,23 +526,30 @@ export class VizioHtml5Adapter extends SessionPlayer {
       this.update(sessionId, { state: 'paused' });
       return;
     }
+    if (observed) { this.enginePlaying = true;this.frameProgressStart = this.media.currentTime; }
     this.update(sessionId, { state: 'playing', error: null });
   }
   private onPause(): void {
+    this.enginePlaying = false;this.frameProgressStart = undefined;
     if (this.pauseRequested) this.clearFirstFrameWatchdog();
     const sessionId = this.snapshot.sessionId;
     if (!this.media.ended && !this.media.error && this.snapshot.state !== 'error')
       this.update(sessionId, { state: 'paused' });
   }
   private onWaiting(): void {
+    this.enginePlaying = false;this.frameProgressStart = undefined;
     if (this.media.error || this.snapshot.state === 'error') return;
     const sessionId = this.snapshot.sessionId;
     this.update(sessionId, { state: 'buffering' });
   }
   private onTimeUpdate(): void {
+    if (this.options.unreliableFrameReporting && this.enginePlaying && !this.media.paused &&
+        !this.media.seeking && (this.media.readyState ?? 0) >= 2 &&
+        this.frameProgressStart !== undefined && this.media.currentTime - this.frameProgressStart >= 0.2)
+      this.frameProgressVerified = true;
     if (this.hasVideoFrame()) this.clearFirstFrameWatchdog();
     const sessionId = this.snapshot.sessionId;
-    this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight, presentedFrames: this.media.getVideoPlaybackQuality?.().totalVideoFrames } : undefined, time: this.publishableTime() });
+    this.update(sessionId, { diagnostics: this.snapshot.diagnostics ? { ...this.snapshot.diagnostics, width: this.media.videoWidth, height: this.media.videoHeight, presentedFrames: this.media.getVideoPlaybackQuality?.().totalVideoFrames, presentationEvidence: this.frameProgressVerified ? 'media-progress' : undefined } : undefined, time: this.publishableTime() });
   }
   /**
    * `progress` fires while data downloads even when `timeupdate` is silent
