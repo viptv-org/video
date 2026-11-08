@@ -83,6 +83,7 @@ export class TizenAvplayAdapter extends SessionPlayer {
   private observedTitleDuration: number | null = null;
   private subtitleRequest?: OpenPlayerRequest;
   private pauseRequested = false;
+  private bufferingPosition: number | undefined;
 
   constructor(private readonly avplay: AvplayManager = resolveAvplay()) {
     super();
@@ -278,7 +279,11 @@ export class TizenAvplayAdapter extends SessionPlayer {
 
   private listenerFor(sessionId: number): AvplayListener {
     return {
-      onbufferingstart: () => this.update(sessionId, { state: 'buffering' }),
+      onbufferingstart: () => {
+        if (!this.isCurrent(sessionId) || this.snapshot.state === 'error' || this.pauseRequested) return;
+        this.bufferingPosition = undefined;
+        this.update(sessionId, { state: 'buffering' });
+      },
       onbufferingcomplete: () => {
         if (this.snapshot.state === 'buffering') this.update(sessionId, { state: this.pauseRequested ? 'paused' : 'playing' });
       },
@@ -291,8 +296,13 @@ export class TizenAvplayAdapter extends SessionPlayer {
           this.fail(sessionId, operationFailure('unsupported-operation', 'AVPlay could not select the requested subtitles.', cause).toFailure());
           return;
         }
+        const position = milliseconds / 1000;
+        const recovered = this.snapshot.state === 'buffering' && !this.pauseRequested &&
+          this.bufferingPosition !== undefined && position > this.bufferingPosition;
+        this.bufferingPosition = position;
         this.update(sessionId, {
-          time: { positionSeconds: this.timelineOffsetSeconds + milliseconds / 1000, durationSeconds: this.durationSeconds() },
+          ...(recovered ? { state: 'playing' as const } : {}),
+          time: { positionSeconds: this.timelineOffsetSeconds + position, durationSeconds: this.durationSeconds() },
         });
       },
       onstreamcompleted: () => this.update(sessionId, { state: 'ended' }),

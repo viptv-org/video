@@ -143,6 +143,11 @@ describe('TizenAvplayAdapter', () => {
     expect(player.snapshot.state).toBe('buffering');
     avplay.listener.oncurrentplaytime?.(45_000);
     expect(player.snapshot.time.positionSeconds).toBe(45);
+    expect(player.snapshot.state).toBe('buffering');
+    avplay.listener.oncurrentplaytime?.(45_500);
+    expect(player.snapshot.state).toBe('playing');
+    await player.pause();avplay.listener.onbufferingstart?.();avplay.listener.oncurrentplaytime?.(46_000);
+    expect(player.snapshot.state).toBe('paused');
     await player.stop();
     avplay.listener.onerror?.('PLAYER_ERROR_CONNECTION_FAILED');
     expect(player.snapshot.state).toBe('stopped');
