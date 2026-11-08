@@ -1,10 +1,9 @@
 import Hls, { FetchLoader } from 'hls.js';
 import { hasSourceAuthorization } from './source-authorization';
 import { checkedMediaDelivery, sessionMediaRequest } from './session-media-fetch';
-import { supportsNativeHls } from './browser-capabilities';
 import { SessionPlayer } from './session';
 import { mediaFailure } from './browser-policy';
-import { nonNegative } from './primitives';
+import { nonNegative, supportsNativeHls } from './primitives';
 import { subtitleIntent } from './subtitle-intent';
 import {
   type OpenPlayerRequest,

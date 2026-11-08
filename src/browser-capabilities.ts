@@ -8,7 +8,8 @@ const BROWSER_CODECS = {
   hevc: 'video/mp4; codecs="hvc1.1.6.L150.B0"',
   aac: 'audio/mp4; codecs="mp4a.40.2"',
 } as const;
-const HLS_MIME_TYPES = ['application/vnd.apple.mpegurl', 'application/x-mpegURL'] as const;
+import { supportsNativeHls } from './primitives';
+export { supportsNativeHls } from './primitives';
 export interface BrowserProbeEnvironment {
   readonly media: { canPlayType(type: string): string };
   readonly decodingInfo?: (configuration: MediaDecodingConfiguration) => Promise<MediaCapabilitiesDecodingInfo>;
@@ -21,9 +22,6 @@ export interface BrowserPlaybackProbe {
   readonly canPlayManagedHls: boolean;
   readonly protocols: { readonly nativeHls: boolean; readonly mseHls: boolean; readonly selectedHls: 'mediabunny' | 'native' | 'mse' | 'unsupported' };
   readonly evidence: readonly string[];
-}
-export function supportsNativeHls(media: { canPlayType?(type: string): string }): boolean {
-  return HLS_MIME_TYPES.some((type) => { try { return !!media.canPlayType?.(type); } catch { return false; } });
 }
 
 /** Probe each executable decoding path separately; actual track preparation remains authoritative. */

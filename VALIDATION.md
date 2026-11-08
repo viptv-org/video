@@ -160,3 +160,9 @@ once with hls.js where MSE is available, retaining position and paused intent.
 Native playback remains preferred when its requested track is exposed. The
 language helper now lives in the lightweight primitives module so native hosts
 do not acquire browser demuxer imports through subtitle presentation.
+
+The HLS MIME hint is now shared from the lightweight primitives module and
+re-exported by the browser probe. This preserves the public function while
+keeping native-host builds independent of the browser probe's dynamic decoder
+imports. The final library gate passes typecheck, build and 182 single-fork
+checks, including the native-caption fallback's paused-position regression.
