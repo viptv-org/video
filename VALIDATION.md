@@ -166,3 +166,19 @@ re-exported by the browser probe. This preserves the public function while
 keeping native-host builds independent of the browser probe's dynamic decoder
 imports. The final library gate passes typecheck, build and 182 single-fork
 checks, including the native-caption fallback's paused-position regression.
+
+Native HLS discovery is also bounded before metadata: a MIME-supported stream
+that never reaches loadedmetadata receives one local MSE retry after eight
+seconds, within any caller-supplied deadline. The selected URL and paused start
+position are preserved. The final library gate passes 183 single-fork tests,
+typecheck and build. No native SDK or network policy is bypassed.
+
+The adopting tv-web qualification exercises generated H.264/AAC with real
+WebVTT cues in Chromium, Firefox and WebKit, separately from injected Samsung
+SDK-boundary checks. Actual beta CineWave deliveries for Loki S1 E1 and MobLand
+S1 E1 decode video and nonzero audio samples in all three engines, with paused
+seek/resume and Loki captions/Off. An additional WebKit callback probe confirms
+multiple presented frames. The tested raw original MobLand Direct Play URL
+still times out and remains unqualified; the gateway result is not counted as
+an original direct-play pass. Physical Samsung/LG/Vizio acceptance and native
+Tizen packaging/signing remain separate.

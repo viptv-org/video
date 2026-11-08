@@ -322,6 +322,16 @@ export class VizioHtml5Adapter extends SessionPlayer {
               catch (cause) { failOpen(cause instanceof PlayerOperationError ? cause : new PlayerOperationError('prepare-failed', 'The browser could not prepare the selected source.', cause)); }
               return true;
             };
+            // A native HLS engine may stall before loadedmetadata, so the
+            // decoded-frame watchdog has not started yet. Give this MIME
+            // hint the same eight-second discovery bound, then try MSE once.
+            clearTimeout(openingTimer);
+            openingTimer = setTimeout(() => {
+              if (this.startupDeadline === undefined || performance.now() < this.startupDeadline) {
+                if (this.nativeHlsFallback?.(true)) return;
+              }
+              failOpen(new PlayerOperationError('prepare-failed', 'The selected source did not become ready in time.'));
+            }, this.startupDeadline === undefined ? 8000 : Math.max(1, Math.min(8000, this.startupDeadline - performance.now())));
           }
           this.media.src = request.url;
           this.media.load();
