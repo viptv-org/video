@@ -77,6 +77,39 @@ it('keeps a native metadata seek and delayed playing events paused until Play is
 });
 
 describe('TizenAvplayAdapter', () => {
+  it('does not repeat SDK play/pause commands after open and retains pause across buffering', async () => {
+    const avplay=new FakeAvplay(),player=new TizenAvplayAdapter(avplay);
+    let opening=player.open({url:'https://media.example/paused.m3u8',kind:'vod',paused:true});
+    avplay.prepareSuccess!();await opening;await player.pause();
+    expect(avplay.pause).not.toHaveBeenCalled();
+    opening=player.open({url:'https://media.example/playing.m3u8',kind:'vod'});
+    avplay.prepareSuccess!();await opening;await player.play();
+    expect(avplay.play).toHaveBeenCalledOnce();
+    await player.pause();avplay.listener.onbufferingstart?.();avplay.listener.onbufferingcomplete?.();
+    expect(player.snapshot.state).toBe('paused');
+    expect(avplay.pause).toHaveBeenCalledOnce();
+    await player.dispose();
+  });
+  it.each([false, true])('applies selected output subtitles only after PLAYING, including paused=%s', async paused => {
+    const avplay = new FakeAvplay();
+    avplay.tracks = [{ index: 8, type: 'TEXT', extra_info: '{"track_lang":"en"}' }];
+    avplay.setSelectTrack.mockImplementation(() => { expect(avplay.play).toHaveBeenCalled(); });
+    const player = new TizenAvplayAdapter(avplay);
+    const opening = player.open({ url:'https://media.example/selected.m3u8',kind:'vod',paused,
+      deliveryMode:'managed',preferredSubtitleLanguage:'eng' });
+    avplay.prepareSuccess!();await opening;
+    if (paused) {
+      expect(avplay.setSelectTrack).not.toHaveBeenCalled();
+      await player.play();
+    }
+    expect(avplay.setSelectTrack).toHaveBeenCalledWith('TEXT',8);
+    expect(avplay.setSilentSubtitle).toHaveBeenCalledWith(false);
+    expect(player.snapshot.tracks.selectedTextId).toBe('text:8');
+    await player.stop();
+    const calls=avplay.setSelectTrack.mock.calls.length;
+    avplay.listener.oncurrentplaytime?.(1000);
+    expect(avplay.setSelectTrack.mock.calls).toHaveLength(calls);
+  });
   it('opens the exact selected source, exposes tracks, and ignores a stale preparation callback', async () => {
     const avplay = new FakeAvplay();
     const player = new TizenAvplayAdapter(avplay);
@@ -110,6 +143,11 @@ describe('TizenAvplayAdapter', () => {
     expect(player.snapshot.state).toBe('buffering');
     avplay.listener.oncurrentplaytime?.(45_000);
     expect(player.snapshot.time.positionSeconds).toBe(45);
+    expect(player.snapshot.state).toBe('buffering');
+    avplay.listener.oncurrentplaytime?.(45_500);
+    expect(player.snapshot.state).toBe('playing');
+    await player.pause();avplay.listener.onbufferingstart?.();avplay.listener.oncurrentplaytime?.(46_000);
+    expect(player.snapshot.state).toBe('paused');
     await player.stop();
     avplay.listener.onerror?.('PLAYER_ERROR_CONNECTION_FAILED');
     expect(player.snapshot.state).toBe('stopped');
@@ -170,6 +208,36 @@ describe('TizenAvplayAdapter', () => {
 
     expect(player.snapshot.time.positionSeconds).toBe(55);
   });
+});
+
+it('applies late native WebVTT selection, respects manual Off, and removes its track listener', async () => {
+  const media = new FakeMedia();media.textTracks.length=0;
+  let added!:()=>void;
+  const remove=vi.fn();
+  Object.assign(media.textTracks,{addEventListener:(_type:string,listener:()=>void)=>{added=listener;},removeEventListener:remove});
+  const player=new VizioHtml5Adapter(media);
+  const opening=player.open({url:'https://media.example/selected.mp4',kind:'vod',paused:true,preferredSubtitleLanguage:'spa'});
+  media.emit('loadedmetadata');await opening;
+  media.textTracks.push({kind:'metadata',label:'Markers',language:'',mode:'hidden'},
+    {kind:'subtitles',label:'Spanish',language:'es',mode:'disabled'});
+  added();
+  expect(media.textTracks[1].mode).toBe('showing');
+  expect(player.snapshot.tracks.selectedTextId).toBe('text:1');
+  await player.selectTextTrack(null);added();
+  expect(media.textTracks[1].mode).toBe('disabled');
+  expect(media.textTracks[0].mode).toBe('hidden');
+  await player.dispose();
+  expect(remove).toHaveBeenCalledWith('addtrack',added);
+});
+
+it('honors explicit native subtitle Off even when the source marks a track showing', async () => {
+  const media = new FakeMedia();media.textTracks[0].mode='showing';
+  const player=new VizioHtml5Adapter(media);
+  const opening=player.open({url:'https://media.example/default.mp4',kind:'vod',paused:true,textTrackId:null});
+  media.emit('loadedmetadata');await opening;
+  expect(media.textTracks[0].mode).toBe('disabled');
+  expect(player.snapshot.tracks.selectedTextId).toBeNull();
+  await player.dispose();
 });
 
 describe('VizioHtml5Adapter', () => {

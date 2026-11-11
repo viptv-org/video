@@ -25,7 +25,113 @@ class Media implements HtmlMediaLike {
 }
 const url = () => `${window.location.origin}/media/session/cap/index.m3u8`;
 beforeEach(() => { hls.supported = true; hls.instances.length = 0; });
+
+it('accepts advancing native playback when the host reports frame APIs as unreliable', async () => {
+ vi.useFakeTimers();const media=new Media();media.nativeHls=true;
+ Object.defineProperties(media,{videoWidth:{value:0},videoHeight:{value:0},readyState:{value:4},getVideoPlaybackQuality:{value:()=>({totalVideoFrames:0})}});
+ const player=new VizioHtml5Adapter(media,{unreliableFrameReporting:true});
+ try{
+  const opening=player.open({url:url(),kind:'vod'});media.emit('loadedmetadata');await opening;
+  media.paused=false;media.emit('playing');
+  await vi.advanceTimersByTimeAsync(250);
+  media.currentTime=.75;await vi.advanceTimersByTimeAsync(750);media.emit('timeupdate');
+  await vi.advanceTimersByTimeAsync(9000);
+  expect(player.snapshot.state).toBe('playing');expect(hls.instances).toHaveLength(0);
+  expect(player.snapshot.diagnostics).toMatchObject({presentedFrames:0,presentationEvidence:'media-progress'});
+ }finally{await player.dispose();vi.useRealTimers();}
+});
+
+it('does not accept metadata or a seek jump as native playback progress evidence', async () => {
+ vi.useFakeTimers();const media=new Media();media.nativeHls=true;
+ Object.defineProperties(media,{videoWidth:{value:0},readyState:{value:4},getVideoPlaybackQuality:{value:()=>({totalVideoFrames:0})}});
+ const player=new VizioHtml5Adapter(media,{unreliableFrameReporting:true});
+ try{
+  const opening=player.open({url:url(),kind:'vod',startupBudgetMs:1000});media.emit('loadedmetadata');await opening;
+  media.paused=false;media.emit('playing');media.emit('seeking');media.currentTime=30;media.emit('timeupdate');
+  await vi.advanceTimersByTimeAsync(1001);
+  expect(player.snapshot.state).toBe('error');expect(player.snapshot.diagnostics?.presentationEvidence).toBeUndefined();
+ }finally{await player.dispose();vi.useRealTimers();}
+});
+it('recovers from coarse native clock updates without playing or ready-state reports', async () => {
+ vi.useFakeTimers();const media=new Media();media.nativeHls=true;
+ Object.defineProperties(media,{videoWidth:{value:0},readyState:{value:0},getVideoPlaybackQuality:{value:()=>({totalVideoFrames:0})}});
+ const player=new VizioHtml5Adapter(media,{unreliableFrameReporting:true});
+ try {
+  const opening=player.open({url:url(),kind:'vod'});media.emit('loadedmetadata');await opening;
+  media.paused=false;media.emit('play');media.emit('waiting');
+  await vi.advanceTimersByTimeAsync(1000);
+  // Native engines can report buffering between every segment without another
+  // playing event. A timeupdate event is not required for the polling fallback.
+  media.emit('waiting');media.currentTime=1;await vi.advanceTimersByTimeAsync(250);
+  expect(player.snapshot.state).toBe('playing');
+  expect(player.snapshot.diagnostics?.presentationEvidence).toBe('media-progress');
+  await vi.advanceTimersByTimeAsync(9000);expect(player.snapshot.error).toBeNull();
+ } finally {await player.dispose();vi.useRealTimers();}
+});
+
+it.each([false,true])('recovers stale buffering from decoded clock progress (paused=%s)',async paused=>{
+ const media=new Media();Object.defineProperties(media,{videoWidth:{value:1920},readyState:{value:4},getVideoPlaybackQuality:{value:()=>({totalVideoFrames:10})}});
+ const player=new VizioHtml5Adapter(media);
+ try {
+  const opening=player.open({url:url(),kind:'vod',paused});media.emit('loadedmetadata');await opening;
+  media.paused=paused;media.emit('timeupdate');media.emit('waiting');media.currentTime=1;media.emit('timeupdate');
+  expect(player.snapshot.state).toBe(paused?'paused':'playing');
+ } finally {await player.dispose();}
+});
+
+it.each(['stalled','paused','jump','seek'] as const)('rejects %s clocks even with unreliable native frame APIs',async kind=>{
+ vi.useFakeTimers();const media=new Media();media.nativeHls=true;hls.supported=false;
+ Object.defineProperties(media,{videoWidth:{value:0},readyState:{value:4},getVideoPlaybackQuality:{value:()=>({totalVideoFrames:0})}});
+ const player=new VizioHtml5Adapter(media,{unreliableFrameReporting:true});
+ try {
+  const opening=player.open({url:url(),kind:'vod',startupBudgetMs:2000});media.emit('loadedmetadata');await opening;
+  media.paused=kind==='paused';media.emit('play');await vi.advanceTimersByTimeAsync(300);
+  if(kind==='seek')await player.seek(60);
+  if(kind==='jump')media.currentTime=60;
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(player.snapshot.error?.message).toContain('did not produce a decoded video frame');
+  expect(player.snapshot.diagnostics?.presentationEvidence).toBeUndefined();
+ } finally {await player.dispose();vi.useRealTimers();}
+});
+
 describe('HTML HLS delivery', () => {
+  it('bounds native HLS startup without metadata and retries the same URL only once', async () => {
+    vi.useFakeTimers();
+    const media=new Media();media.nativeHls=true;
+    const player=new VizioHtml5Adapter(media);
+    try {
+      const opening=player.open({url:url(),kind:'vod',paused:true,startAtSeconds:3});
+      await vi.advanceTimersByTimeAsync(7999);
+      expect(hls.instances).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(hls.instances).toHaveLength(1);
+      expect(hls.instances[0].loadSource).toHaveBeenCalledWith(url());
+      media.emit('loadedmetadata');await opening;
+      expect(player.snapshot.state).toBe('paused');
+      expect(media.currentTime).toBe(3);
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(hls.instances).toHaveLength(1);
+    } finally {await player.dispose();vi.useRealTimers();}
+  });
+  it('retries the same HLS URL when native video exposes no requested subtitle rendition', async () => {
+    vi.useFakeTimers();
+    const media=new Media();media.nativeHls=true;media.currentTime=0;
+    const player=new VizioHtml5Adapter(media);
+    try {
+      const opening=player.open({url:url(),kind:'vod',paused:true,preferredSubtitleLanguage:'en'});
+      media.emit('loadedmetadata');await opening;
+      media.currentTime=2;
+      await vi.advanceTimersByTimeAsync(750);
+      expect(hls.instances).toHaveLength(1);
+      expect(hls.instances[0].loadSource).toHaveBeenCalledWith(url());
+      media.emit('loadedmetadata');
+      expect(player.snapshot.time.positionSeconds).toBe(2);
+      expect(player.snapshot.state).toBe('paused');
+      await player.stop();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(hls.instances).toHaveLength(1);
+    } finally { await player.dispose();vi.useRealTimers(); }
+  });
   it('prefers native HLS even when MSE is available', async () => {
     const media = new Media(); media.nativeHls = true;
     const player = new VizioHtml5Adapter(media);

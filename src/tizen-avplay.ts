@@ -1,6 +1,7 @@
 import { SessionPlayer } from './session';
 import { checkedSourceAuthorization } from './source-authorization';
 import { nonNegative } from './primitives';
+import { subtitleIntent } from './subtitle-intent';
 import {
   type OpenPlayerRequest,
   type PlayerErrorCode,
@@ -76,10 +77,15 @@ interface PendingOpen {
 export class TizenAvplayAdapter extends SessionPlayer {
   readonly capabilities: PlayerCapabilities;
   private pendingOpen: PendingOpen | null = null;
+  private pendingSeek: Promise<void> | null = null;
+  private lifecycleGeneration = 0;
   private timelineOffsetSeconds = 0;
   private timelineDurationSeconds: number | undefined;
   private adoptEngineDuration = false;
   private observedTitleDuration: number | null = null;
+  private subtitleRequest?: OpenPlayerRequest;
+  private pauseRequested = false;
+  private bufferingPosition: number | undefined;
 
   constructor(private readonly avplay: AvplayManager = resolveAvplay()) {
     super();
@@ -93,61 +99,66 @@ export class TizenAvplayAdapter extends SessionPlayer {
   }
 
   open(request: OpenPlayerRequest): Promise<void> {
+    this.lifecycleGeneration += 1;
     this.cancelPendingOpen();
     this.invalidateSession();
-    this.closeSafely();
     const sessionId = this.startSession(request.kind);
     this.timelineOffsetSeconds = nonNegative(request.timelineOffsetSeconds ?? 0);
     this.timelineDurationSeconds = request.timelineDurationSeconds;
     this.adoptEngineDuration = request.adoptEngineDuration === true;
     this.observedTitleDuration = null;
-
-    try {
-      this.avplay.open(request.url);
-      this.avplay.setListener(this.listenerFor(sessionId));
-      this.setDisplayRect();
-      // Samsung documents COOKIE/USER_AGENT as IDLE-state properties. open()
-      // enters IDLE, while prepareAsync() leaves it, so keep this ordering.
-      this.applyAuthorization(request);
-    } catch (cause) {
-      const error = cause instanceof PlayerOperationError
-        ? cause
-        : operationFailure('prepare-failed', 'AVPlay could not open the selected source.', cause);
-      this.fail(sessionId, error.toFailure());
-      return Promise.reject(error);
-    }
+    this.subtitleRequest = request;
+    this.pauseRequested = request.paused === true;
 
     return new Promise<void>((resolve, reject) => {
       this.pendingOpen = { sessionId, resolve, reject };
-      try {
-        this.avplay.prepareAsync(
-          () => this.prepared(sessionId, request),
-          (cause) => this.preparationFailed(sessionId, cause),
-        );
-      } catch (cause) {
-        this.preparationFailed(sessionId, cause);
-      }
+      void this.afterSeek(() => {
+        this.closeSafely();
+        try {
+          this.avplay.open(request.url);
+          this.avplay.setListener(this.listenerFor(sessionId));
+          this.setDisplayRect();
+          // COOKIE/USER_AGENT must be set in IDLE before prepareAsync().
+          this.applyAuthorization(request);
+          this.avplay.prepareAsync(
+            () => this.prepared(sessionId, request),
+            (cause) => this.preparationFailed(sessionId, cause),
+          );
+        } catch (cause) {
+          this.preparationFailed(sessionId, cause);
+        }
+      }, () => this.isCurrent(sessionId)).catch(cause => this.preparationFailed(sessionId, cause));
     });
   }
 
   async play(): Promise<void> {
     const sessionId = this.activeSessionOrThrow();
-    try {
-      this.avplay.play();
-      this.update(sessionId, { state: 'playing', error: null });
-    } catch (cause) {
-      this.throwOperation(sessionId, 'invalid-state', 'AVPlay could not resume playback.', cause);
-    }
+    this.pauseRequested = false;
+    return this.afterSeek(() => {
+      if (this.snapshot.state === 'playing') return;
+      try {
+        this.avplay.play();
+        this.applySubtitleIntent(sessionId);
+        this.update(sessionId, { state: 'playing', error: null });
+      } catch (cause) {
+        this.throwOperation(sessionId, 'invalid-state', 'AVPlay could not resume playback.', cause);
+      }
+    }, () => this.isCurrent(sessionId));
   }
 
   async pause(): Promise<void> {
     const sessionId = this.activeSessionOrThrow();
-    try {
-      this.avplay.pause();
-      this.update(sessionId, { state: 'paused' });
-    } catch (cause) {
-      this.throwOperation(sessionId, 'invalid-state', 'AVPlay could not pause playback.', cause);
-    }
+    this.pauseRequested = true;
+    return this.afterSeek(() => {
+      // A prepared paused open is still READY natively; pause() is invalid there.
+      if (this.snapshot.state === 'paused') return;
+      try {
+        this.avplay.pause();
+        this.update(sessionId, { state: 'paused' });
+      } catch (cause) {
+        this.throwOperation(sessionId, 'invalid-state', 'AVPlay could not pause playback.', cause);
+      }
+    }, () => this.isCurrent(sessionId));
   }
 
   seek(positionSeconds: number): Promise<void> {
@@ -155,70 +166,70 @@ export class TizenAvplayAdapter extends SessionPlayer {
     if (!Number.isFinite(positionSeconds) || positionSeconds < 0) {
       return Promise.reject(new PlayerOperationError('seek-failed', 'Seek position must be a non-negative number.'));
     }
-    return new Promise<void>((resolve, reject) => {
-      try {
-        const nativePosition = Math.max(0, positionSeconds - this.timelineOffsetSeconds);
-        this.avplay.seekTo(Math.round(nativePosition * 1000), () => {
-          if (this.isCurrent(sessionId)) {
-            this.updateTimeFromEngine(sessionId, positionSeconds);
-          }
-          resolve();
-        }, (cause) => {
-          const error = operationFailure('seek-failed', 'AVPlay could not seek the selected source.', cause);
-          this.fail(sessionId, error.toFailure());
-          reject(error);
-        });
-      } catch (cause) {
-        const error = operationFailure('seek-failed', 'AVPlay could not seek the selected source.', cause);
-        this.fail(sessionId, error.toFailure());
-        reject(error);
-      }
-    });
+    return this.afterSeek(() => new Promise<void>((resolve, reject) => {
+      const nativePosition = Math.max(0, positionSeconds - this.timelineOffsetSeconds);
+      this.nativeSeek(Math.round(nativePosition * 1000), () => {
+        if (this.isCurrent(sessionId)) this.updateTimeFromEngine(sessionId, positionSeconds);
+        resolve();
+      }, (cause) => {
+        reject(operationFailure('seek-failed', 'AVPlay could not seek the selected source.', cause));
+      });
+    }), () => this.isCurrent(sessionId));
   }
 
   async stop(): Promise<void> {
+    const generation = ++this.lifecycleGeneration;
+    this.subtitleRequest = undefined;
     this.cancelPendingOpen();
     this.invalidateSession();
-    try { this.avplay.stop(); } catch { /* stop is state-dependent on AVPlay */ }
-    this.closeSafely();
     this.terminal('stopped');
+    return this.afterSeek(() => {
+      try { this.avplay.stop(); } catch { /* stop is state-dependent on AVPlay */ }
+      this.closeSafely();
+    }, () => generation === this.lifecycleGeneration);
   }
 
   async dispose(): Promise<void> {
+    const generation = this.lifecycleGeneration + 1;
     await this.stop();
-    this.terminal('disposed');
+    if (generation === this.lifecycleGeneration) this.terminal('disposed');
   }
 
   async selectAudioTrack(trackId: string): Promise<void> {
     const sessionId = this.activeSessionOrThrow();
     const track = this.findTrack('audio', trackId);
     if (!track) throw new PlayerOperationError('unsupported-operation', `Audio track ${trackId} is not available.`);
-    try {
-      this.avplay.setSelectTrack('AUDIO', parseTrackIndex(trackId));
-      this.update(sessionId, { tracks: { ...this.snapshot.tracks, selectedAudioId: trackId } });
-    } catch (cause) {
-      this.throwOperation(sessionId, 'unsupported-operation', `AVPlay could not select audio track ${track.label}.`, cause);
-    }
+    return this.afterSeek(() => {
+      try {
+        this.avplay.setSelectTrack('AUDIO', parseTrackIndex(trackId));
+        this.update(sessionId, { tracks: { ...this.snapshot.tracks, selectedAudioId: trackId } });
+      } catch (cause) {
+        this.throwOperation(sessionId, 'unsupported-operation', `AVPlay could not select audio track ${track.label}.`, cause);
+      }
+    }, () => this.isCurrent(sessionId));
   }
 
   async selectTextTrack(trackId: string | null): Promise<void> {
+    this.subtitleRequest = undefined;
     const sessionId = this.activeSessionOrThrow();
-    try {
-      if (trackId === null) {
-        // Samsung defines true as hidden and false as shown.
-        this.avplay.setSilentSubtitle(true);
-        this.update(sessionId, { tracks: { ...this.snapshot.tracks, selectedTextId: null } });
-        return;
+    return this.afterSeek(() => {
+      try {
+        if (trackId === null) {
+          // Samsung defines true as hidden and false as shown.
+          this.avplay.setSilentSubtitle(true);
+          this.update(sessionId, { tracks: { ...this.snapshot.tracks, selectedTextId: null } });
+          return;
+        }
+        const track = this.findTrack('text', trackId);
+        if (!track) throw new PlayerOperationError('unsupported-operation', `Subtitle track ${trackId} is not available.`);
+        this.avplay.setSelectTrack('TEXT', parseTrackIndex(trackId));
+        this.avplay.setSilentSubtitle(false);
+        this.update(sessionId, { tracks: { ...this.snapshot.tracks, selectedTextId: trackId } });
+      } catch (cause) {
+        if (cause instanceof PlayerOperationError) throw cause;
+        this.throwOperation(sessionId, 'unsupported-operation', 'AVPlay could not select subtitles for this source.', cause);
       }
-      const track = this.findTrack('text', trackId);
-      if (!track) throw new PlayerOperationError('unsupported-operation', `Subtitle track ${trackId} is not available.`);
-      this.avplay.setSelectTrack('TEXT', parseTrackIndex(trackId));
-      this.avplay.setSilentSubtitle(false);
-      this.update(sessionId, { tracks: { ...this.snapshot.tracks, selectedTextId: trackId } });
-    } catch (cause) {
-      if (cause instanceof PlayerOperationError) throw cause;
-      this.throwOperation(sessionId, 'unsupported-operation', 'AVPlay could not select subtitles for this source.', cause);
-    }
+    }, () => this.isCurrent(sessionId));
   }
 
   private prepared(sessionId: number, request: OpenPlayerRequest): void {
@@ -232,11 +243,12 @@ export class TizenAvplayAdapter extends SessionPlayer {
     });
     const complete = () => {
       if (!this.isCurrent(sessionId)) return;
-      if (request.paused) {
+      if (this.pauseRequested) {
         this.update(sessionId, { state: 'paused' });
       } else {
         try {
           this.avplay.play();
+          this.applySubtitleIntent(sessionId);
           this.update(sessionId, { state: 'playing' });
         } catch (cause) {
           this.preparationFailed(sessionId, cause);
@@ -246,7 +258,7 @@ export class TizenAvplayAdapter extends SessionPlayer {
       this.resolvePending(sessionId);
     };
     if (startAtSeconds > 0) {
-      this.avplay.seekTo(Math.round(startAtSeconds * 1000), complete, (cause) => this.preparationFailed(sessionId, cause));
+      this.nativeSeek(Math.round(startAtSeconds * 1000), complete, (cause) => this.preparationFailed(sessionId, cause));
     } else {
       complete();
     }
@@ -254,7 +266,9 @@ export class TizenAvplayAdapter extends SessionPlayer {
 
   private preparationFailed(sessionId: number, cause: unknown): void {
     if (!this.isCurrent(sessionId)) return;
-    const error = operationFailure('prepare-failed', 'AVPlay could not prepare the selected source.', cause);
+    const error = cause instanceof PlayerOperationError
+      ? cause
+      : operationFailure('prepare-failed', 'AVPlay could not prepare the selected source.', cause);
     this.fail(sessionId, error.toFailure());
     if (this.pendingOpen?.sessionId === sessionId) {
       this.pendingOpen.reject(error);
@@ -264,15 +278,32 @@ export class TizenAvplayAdapter extends SessionPlayer {
 
   private listenerFor(sessionId: number): AvplayListener {
     return {
-      onbufferingstart: () => this.update(sessionId, { state: 'buffering' }),
+      onbufferingstart: () => {
+        if (!this.isCurrent(sessionId) || this.snapshot.state === 'error' || this.pauseRequested) return;
+        this.bufferingPosition = undefined;
+        this.update(sessionId, { state: 'buffering' });
+      },
       onbufferingcomplete: () => {
-        if (this.snapshot.state === 'buffering') this.update(sessionId, { state: 'playing' });
+        if (this.snapshot.state === 'buffering') this.update(sessionId, { state: this.pauseRequested ? 'paused' : 'playing' });
       },
       // AVPlay's documented callback value is the event's timeline fact. Do not
       // replace it with a second engine read that can lag behind the callback.
-      oncurrentplaytime: (milliseconds) => this.update(sessionId, {
-        time: { positionSeconds: this.timelineOffsetSeconds + milliseconds / 1000, durationSeconds: this.durationSeconds() },
-      }),
+      oncurrentplaytime: (milliseconds) => {
+        if (!this.isCurrent(sessionId)) return;
+        try { if (!this.pendingSeek) this.applySubtitleIntent(sessionId); }
+        catch (cause) {
+          this.fail(sessionId, operationFailure('unsupported-operation', 'AVPlay could not select the requested subtitles.', cause).toFailure());
+          return;
+        }
+        const position = milliseconds / 1000;
+        const recovered = this.snapshot.state === 'buffering' && !this.pauseRequested &&
+          this.bufferingPosition !== undefined && position > this.bufferingPosition;
+        this.bufferingPosition = position;
+        this.update(sessionId, {
+          ...(recovered ? { state: 'playing' as const } : {}),
+          time: { positionSeconds: this.timelineOffsetSeconds + position, durationSeconds: this.durationSeconds() },
+        });
+      },
       onstreamcompleted: () => this.update(sessionId, { state: 'ended' }),
       onerror: (code) => this.fail(sessionId, operationFailure('connection-failed', `AVPlay error: ${code}`).toFailure()),
       onerrormsg: (code, message) => this.fail(sessionId, operationFailure('connection-failed', `AVPlay error ${code}: ${message}`).toFailure()),
@@ -286,6 +317,7 @@ export class TizenAvplayAdapter extends SessionPlayer {
   }
 
   private durationSeconds(): number | null {
+    if (this.pendingSeek) return this.observedTitleDuration;
     let engine: number | null = null;
     try {
       const duration = this.avplay.getDuration() / 1000;
@@ -315,6 +347,19 @@ export class TizenAvplayAdapter extends SessionPlayer {
     return this.snapshot.tracks[kind].find((track) => track.id === id && track.available);
   }
 
+  private applySubtitleIntent(sessionId: number): void {
+    const request = this.subtitleRequest;
+    if (!request || !this.isCurrent(sessionId)) return;
+    const tracks = tracksFromAvplay(this.avplay.getTotalTrackInfo());
+    const id = subtitleIntent(request, tracks.text);
+    if (id === undefined) return;
+    this.subtitleRequest = undefined;
+    // HLS TEXT selection is allowed in PLAYING/PAUSED, not READY.
+    if (id !== null) this.avplay.setSelectTrack('TEXT', parseTrackIndex(id));
+    this.avplay.setSilentSubtitle(id === null);
+    this.update(sessionId, { tracks: { ...tracks, selectedTextId: id } });
+  }
+
   private throwOperation(sessionId: number, code: PlayerErrorCode, message: string, cause: unknown): never {
     const error = operationFailure(code, message, cause);
     this.fail(sessionId, error.toFailure());
@@ -332,6 +377,33 @@ export class TizenAvplayAdapter extends SessionPlayer {
     if (this.pendingOpen) {
       this.pendingOpen.resolve();
       this.pendingOpen = null;
+    }
+  }
+
+  private afterSeek(action: () => void | Promise<void>, wanted: () => boolean): Promise<void> {
+    if (!wanted()) return Promise.resolve();
+    if (this.pendingSeek) return this.pendingSeek.then(() => this.afterSeek(action, wanted));
+    try { return Promise.resolve(action()); }
+    catch (cause) { return Promise.reject(cause); }
+  }
+
+  private nativeSeek(milliseconds: number, success: () => void, error: (cause: unknown) => void): void {
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    this.pendingSeek = pending;
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      // AVPlay forbids every other API until either seek callback arrives.
+      this.pendingSeek = null;
+      release();
+      callback();
+    };
+    try {
+      this.avplay.seekTo(milliseconds, () => finish(success), cause => finish(() => error(cause)));
+    } catch (cause) {
+      finish(() => error(cause));
     }
   }
 
@@ -362,7 +434,7 @@ function tracksFromAvplay(infos: readonly AvplayTrackInfo[]): PlayerTracks {
     if (info.type !== 'AUDIO' && info.type !== 'TEXT') continue;
     const kind = info.type === 'AUDIO' ? 'audio' : 'text';
     const metadata = parseExtraInfo(info.extra_info);
-    const language = readString(metadata, 'language') ?? readString(metadata, 'lang');
+    const language = readString(metadata, 'language') ?? readString(metadata, 'track_lang') ?? readString(metadata, 'lang');
     const codec = readString(metadata, 'fourCC') ?? readString(metadata, 'codec');
     const label = [language, codec].filter(Boolean).join(' · ') || `${kind === 'audio' ? 'Audio' : 'Subtitle'} ${info.index}`;
     const track: PlayerTrack = { id: `${kind}:${info.index}`, label, language, available: true };

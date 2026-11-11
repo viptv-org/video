@@ -31,6 +31,16 @@ Samsung's WebAPI library (`$WEBAPIS/webapis/webapis.js`) in its TV page and
 passes the manager at construction; remote media origins must be allowed by
 the application's `config.xml` content security policy.
 
+[Samsung's AVPlay contract](https://developer.samsung.com/smarttv/develop/api-references/samsung-product-api-references/avplay-api.html)
+requires commands and engine reads to wait for an outstanding `seekTo` callback,
+including Stop and source replacement. Logical cancellation is immediate; the
+stop promise settles after native cleanup. Superseded commands and callbacks
+cannot change the newer source. A refused seek rejects without failing healthy
+playback. If the SDK never invokes either seek callback, native cleanup remains
+pending: Samsung's API contract provides no concurrent close operation. These
+lifecycle rules have injected SDK-boundary coverage; physical playback, codec
+and firmware qualification remain separate.
+
 ## Tauri desktop
 
 The `tauri` adapter speaks the raw IPC protocol of `tauri-plugin-video`

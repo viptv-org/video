@@ -136,6 +136,7 @@ export interface PlayerDiagnostics {
   readonly firstFrameMs?: number;
   readonly droppedFrames?: number;
   readonly presentedFrames?: number;
+  readonly presentationEvidence?: 'media-progress';
   readonly estimatedAvSkewMs?: number;
   readonly presentedPositionSeconds?: number;
   readonly frameTiming?: 'verified' | 'unavailable';

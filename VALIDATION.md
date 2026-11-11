@@ -134,3 +134,51 @@ acknowledge actual rendering separately from endpoint readiness.
 
 Type checking, all 171 tests and the package build pass. These adapter/controller
 checks do not qualify peer acquisition, native hardware or production delivery.
+
+## TV subtitle intent and Samsung state transitions
+
+The TV client publishes server-selected output subtitles through
+`preferredSubtitleLanguage` and explicit `textTrackId: null` for Off. The HTML
+adapter now applies those at actual rendition readiness, including late native
+text tracks and hls.js's post-event default-selection ordering. Manual changes
+supersede the initial intent. Native metadata tracks retain their indices and
+are excluded from selectable subtitles. Samsung's documented `track_lang` is
+recognized; HLS TEXT selection waits until PLAYING/PAUSED, and confirming Play
+or Pause after an open never repeats an invalid SDK transition. Paused intent
+survives buffering callbacks. Initial paused AVPlay preparation remains READY
+natively until explicit Play.
+
+Typecheck, package build and all 181 single-fork tests pass. New checks include
+late native subtitles, explicit Off, output versus input track indices, ISO
+language aliases and Samsung state-dependent commands. These tests mock the
+external SDK boundary; they do not certify physical Samsung or LG playback.
+
+A real browser probe also exposed a native-HLS subtitle gap: a MIME-supported
+stream can decode video while exposing no requested text rendition. After a
+bounded native track-discovery grace, the HTML adapter retries that same URL
+once with hls.js where MSE is available, retaining position and paused intent.
+Native playback remains preferred when its requested track is exposed. The
+language helper now lives in the lightweight primitives module so native hosts
+do not acquire browser demuxer imports through subtitle presentation.
+
+The HLS MIME hint is now shared from the lightweight primitives module and
+re-exported by the browser probe. This preserves the public function while
+keeping native-host builds independent of the browser probe's dynamic decoder
+imports. The final library gate passes typecheck, build and 182 single-fork
+checks, including the native-caption fallback's paused-position regression.
+
+Native HLS discovery is also bounded before metadata: a MIME-supported stream
+that never reaches loadedmetadata receives one local MSE retry after eight
+seconds, within any caller-supplied deadline. The selected URL and paused start
+position are preserved. The final library gate passes 183 single-fork tests,
+typecheck and build. No native SDK or network policy is bypassed.
+
+The adopting tv-web qualification exercises generated H.264/AAC with real
+WebVTT cues in Chromium, Firefox and WebKit, separately from injected Samsung
+SDK-boundary checks. Actual beta CineWave deliveries for Loki S1 E1 and MobLand
+S1 E1 decode video and nonzero audio samples in all three engines, with paused
+seek/resume and Loki captions/Off. An additional WebKit callback probe confirms
+multiple presented frames. The tested raw original MobLand Direct Play URL
+still times out and remains unqualified; the gateway result is not counted as
+an original direct-play pass. Physical Samsung/LG/Vizio acceptance and native
+Tizen packaging/signing remain separate.

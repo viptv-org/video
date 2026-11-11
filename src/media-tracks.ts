@@ -1,8 +1,9 @@
 import type { Input, InputAudioTrack, InputVideoTrack } from 'mediabunny';
 import type { OpenPlayerRequest, PlayerQuality, PlayerTrack } from './types';
+import { mediaLanguage } from './primitives';
+export { mediaLanguage } from './primitives';
 
 export const trackId = (type: string, id: number) => `${type}:${id}`;
-export const mediaLanguage = (language: string) => ({ en: 'eng', es: 'spa', fr: 'fra', de: 'deu', it: 'ita', pt: 'por', ja: 'jpn', ko: 'kor', zh: 'zho', hi: 'hin', ar: 'ara' }[language.split('-')[0]] ?? language);
 export async function audioChoices(video: InputVideoTrack): Promise<{ tracks: InputAudioTrack[]; choices: PlayerTrack[] }> {
   const tracks = await video.getPairableAudioTracks();
   const choices = await Promise.all(tracks.map(async (track) => ({
