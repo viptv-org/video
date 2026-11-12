@@ -26,7 +26,7 @@ const api = {
     unsubscribe?.(); await player?.dispose();
     video.style.visibility = engine === 'bunny' ? 'hidden' : ''; canvas.style.display = engine === 'bunny' || engine === 'auto' ? '' : 'none';
     player = engine === 'mse' ? new MediabunnyMseAdapter(video) : engine === 'bunny' ? new MediabunnyAdapter(canvas)
-      : engine === 'native' ? new VizioHtml5Adapter(video) : createPlayer({ platform: 'html5', video, canvas });
+      : engine === 'native' || engine === 'native-sparse' ? new VizioHtml5Adapter(video, {unreliableFrameReporting:engine==='native-sparse'}) : createPlayer({ platform: 'html5', video, canvas });
     await player.setMuted?.(true);
     unsubscribe = player.subscribe(value => {
       snapshot = value;
@@ -36,6 +36,10 @@ const api = {
     await player.open({ url: new URL(`/media/fixtures/cap/${file}`, location.href).href, kind, deliveryFormat: file.includes('.m3u8') ? 'hls' : undefined, deliveryMode: 'direct', startAtSeconds: position, adoptEngineDuration: true });
     return snapshot;
   },
+  async replace(file = 'index.m3u8', position = 0, paused = false) {
+    await player!.open({url:new URL(`/media/fixtures/cap/${file}`,location.href).href,kind:'vod',startAtSeconds:position,paused,adoptEngineDuration:true});
+  },
+  media() { const quality=video.getVideoPlaybackQuality?.();return { position:video.currentTime,paused:video.paused,frames:quality?.totalVideoFrames,outputFrames:quality ? quality.totalVideoFrames-quality.droppedVideoFrames : undefined,frameCallback:typeof video.requestVideoFrameCallback==='function',presentedTime }; },
   async seek(position: number) { await player!.seek(position); },
   async audio(id: string) { await player!.selectAudioTrack(id); },
   async text(id?: string | null) { await player!.loadTextTracks?.(); if (id !== undefined) await player!.selectTextTrack(id); return snapshot?.tracks; },

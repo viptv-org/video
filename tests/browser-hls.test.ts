@@ -37,7 +37,7 @@ it('accepts advancing native playback when the host reports frame APIs as unreli
   media.currentTime=.75;await vi.advanceTimersByTimeAsync(750);media.emit('timeupdate');
   await vi.advanceTimersByTimeAsync(9000);
   expect(player.snapshot.state).toBe('playing');expect(hls.instances).toHaveLength(0);
-  expect(player.snapshot.diagnostics).toMatchObject({presentedFrames:0,presentationEvidence:'media-progress'});
+  expect(player.snapshot.diagnostics).toMatchObject({videoFrames:0,presentationEvidence:'media-progress'});
  }finally{await player.dispose();vi.useRealTimers();}
 });
 
@@ -355,9 +355,9 @@ it('publishes measured decoded frames separately from metadata readiness', async
   const player = new VizioHtml5Adapter(media);
   const opening = player.open({ url: url(), kind: 'vod' });
   media.emit('loadedmetadata'); await opening;
-  expect(player.snapshot.diagnostics?.presentedFrames).toBe(0);
+  expect(player.snapshot.diagnostics?.videoFrames).toBe(0);
   frames = 3; media.emit('timeupdate');
-  expect(player.snapshot.diagnostics?.presentedFrames).toBe(3);
+  expect(player.snapshot.diagnostics?.videoFrames).toBe(3);
   await player.dispose();
 });
 it('keeps the caller startup deadline through metadata and first-frame waiting', async () => {
@@ -377,4 +377,29 @@ it('keeps the caller startup deadline through metadata and first-frame waiting',
     expect(hls.instances).toHaveLength(0);
     await player.dispose();
   } finally { vi.useRealTimers(); }
+});
+
+
+it('retires native frame callbacks before the same-session HLS-to-MSE handoff', async () => {
+  vi.useFakeTimers();const media=new Media();media.nativeHls=true;
+  Object.defineProperties(media,{videoWidth:{value:1920},getVideoPlaybackQuality:{value:()=>({totalVideoFrames:1})}});
+  const callbacks:Array<(now:number,metadata:{mediaTime:number;presentedFrames:number})=>void>=[];
+  const request=vi.fn((callback:(typeof callbacks)[number])=>{callbacks.push(callback);return callbacks.length;});
+  const cancel=vi.fn();Object.assign(media,{requestVideoFrameCallback:request,cancelVideoFrameCallback:cancel});
+  const player=new VizioHtml5Adapter(media,{unreliableFrameReporting:true});
+  try {
+    const opening=player.open({url:url(),kind:'vod',preferredSubtitleLanguage:'en'});media.emit('loadedmetadata');await opening;
+    media.paused=false;media.emit('playing');callbacks[0](0,{mediaTime:.5,presentedFrames:3});media.emit('timeupdate');
+    expect(player.snapshot.diagnostics?.presentedFrames).toBe(3);
+    let finishPlay!:()=>void;media.play.mockImplementationOnce(()=>new Promise<void>(resolve=>{finishPlay=resolve;}));
+    const pendingPlay=player.play();
+    const retired=callbacks[1];await vi.advanceTimersByTimeAsync(750);
+    expect(hls.instances).toHaveLength(1);expect(cancel).toHaveBeenCalled();
+    finishPlay();await pendingPlay;expect(player.snapshot.state).toBe('buffering');
+    media.emit('loadedmetadata');retired(0,{mediaTime:99,presentedFrames:999});media.emit('timeupdate');
+    expect(player.snapshot.diagnostics?.presentedFrames).toBeUndefined();
+    expect(player.snapshot.diagnostics?.presentationEvidence).toBeUndefined();
+    media.emit('playing');callbacks[2](0,{mediaTime:1,presentedFrames:1});media.emit('timeupdate');
+    expect(player.snapshot.diagnostics?.presentedFrames).toBe(1);
+  } finally {await player.dispose();vi.useRealTimers();}
 });
