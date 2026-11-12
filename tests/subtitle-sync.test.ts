@@ -30,3 +30,64 @@ describe('bounded subtitle correction', () => {
     expect(() => new SubtitleSyncView(Array.from({ length: 4097 }, () => ({ start: 0, end: 1, text: 'x' })), 'g', 'h')).toThrow();
   });
 });
+
+const fixed = (revision = 1, seconds = 2): SubtitleSyncRecord => ({ ...record(revision), correction: { anchorUs: 0, offsetUs: seconds * 1e6, scale: 1 } });
+const continuous = (overlap = 0) => new SubtitleSyncView(Array.from({ length: 100 }, (_, i) => ({ start: i, end: i + 1 + overlap, text: String(i) })), 'generation', 'hash');
+
+for (const overlap of [0, 0.25]) it(`applies an accepted correction within five content seconds with ${overlap ? 'overlapping' : 'back-to-back'} cues`, () => {
+  const view = continuous(overlap);
+  view.at(10.1, 0); expect(view.accept(fixed())).toBe(true);
+  expect(view.at(15.099, 0).texts).toEqual(overlap ? ['14', '15'] : ['15']);
+  expect(view.at(15.1, 0).texts).toEqual(overlap ? ['12', '13'] : ['13']);
+});
+
+it('coalescing accepted revisions does not restart the five-second swap bound', () => {
+  const view = continuous(); view.at(10.25, 0); view.accept(fixed());
+  expect(view.at(12.25, 0).texts).toEqual(['12']);
+  expect(view.accept(fixed(2, 3))).toBe(true);
+  expect(view.at(15.25, 0).texts).toEqual(['12']);
+});
+
+it('pause and origin-only rebasing do not advance content wait, while forward seeks retain valid mapping', () => {
+  const view = continuous(); view.at(10, 60); view.accept(fixed());
+  for (let tick = 0; tick < 100; tick++) expect(view.at(5, 65).texts).toEqual(['70']);
+  expect(view.at(9.999, 65).texts).toEqual(['74']);
+  expect(view.at(10, 65).texts).toEqual(['73']);
+  expect(view.at(22.5, 65).texts).toEqual(['85']);
+  const forward = continuous(); forward.at(10.25, 0); forward.accept(fixed());
+  expect(forward.at(30.25, 0).texts).toEqual(['28']);
+});
+
+it('a backward seek reanchors an unapplied wait without discarding or multiplying the correction', () => {
+  const view = continuous(); view.at(10.25, 0); view.accept(fixed()); view.at(12.25, 0);
+  expect(view.at(3.25, 0).texts).toEqual(['3']);
+  expect(view.at(8.249, 0).texts).toEqual(['8']);
+  expect(view.at(8.25, 0).texts).toEqual(['6']);
+  expect(view.at(30.25, 0).texts).toEqual(['28']);
+});
+
+it('manual freeze and disposal retire a pending timed swap', () => {
+  const view = continuous(); view.at(10.25, 0); view.accept(fixed()); view.manualDelay(1);
+  expect(view.at(20.25, 0).texts).toEqual(['19']);
+  view.resume(); expect(view.at(30.25, 0).texts).toEqual(['29']);
+  view.accept(fixed(2)); view.dispose();
+  expect(view.at(40.25, 0)).toEqual({ texts: [], deferred: true });
+  expect(view.accept(fixed(3))).toBe(false);
+  const remote = continuous(); remote.at(10.25, 0); remote.accept(fixed());
+  expect(remote.accept({ ...fixed(2), manual: true })).toBe(false);
+  expect(remote.at(20.25, 0).texts).toEqual(['20']);
+});
+
+it('malformed accepted records cannot poison identity, revision or an existing pending correction', () => {
+  for (const correction of [null, { anchorUs: 0, offsetUs: 31e6, scale: 1 }, { anchorUs: 0.5, offsetUs: 0, scale: 1 }, { anchorUs: 0, offsetUs: 0, scale: NaN }]) {
+    const view = continuous();
+    expect(view.accept({ ...fixed(99), media_identity: 'poison-media', audio_identity: 'poison-audio', correction })).toBe(false);
+    expect(view.accept(fixed())).toBe(true);
+  }
+  const view = continuous(); view.at(10.25, 0); view.accept(fixed());
+  expect(view.accept({ ...fixed(99), audio_identity: '' })).toBe(false);
+  expect(view.accept({ ...fixed(99), correction: { anchorUs: 0, offsetUs: 0, scale: Infinity } })).toBe(false);
+  expect(view.accept({ ...fixed(99), audio_identity: 'other-dub' })).toBe(false);
+  expect(view.accept(fixed(2, 3))).toBe(true);
+  expect(view.at(15.25, 0).texts).toEqual(['12']);
+});

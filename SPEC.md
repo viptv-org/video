@@ -288,8 +288,11 @@ is dimensionless and independent of playback speed.
 
 Correction records require the selected playback generation, session media/audio
 identity, subtitle hash, algorithm version and increasing revision. Manual delay
-freezes automatic changes until explicit resume/reset. Pending automatic changes
-apply at a cue gap. Lookup visits at most 128 intervals and returns at most 32
+freezes automatic changes until explicit resume/reset. Pending automatic changes apply at the first observed cue gap or after at most
+five content seconds. Paused clocks do not advance the wait; backward seeks
+reanchor an unapplied wait and forward content jumps can satisfy it. Coalescing
+new accepted revisions keeps the original pending deadline. Malformed records
+are rejected before advancing identity/revision state. Lookup visits at most 128 intervals and returns at most 32
 active strings; dense windows defer. No track-wide timestamp mutation, media
 reload or backend selection occurs in this class.
 

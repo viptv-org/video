@@ -16,6 +16,8 @@ export interface SubtitleWindow { readonly texts: readonly string[]; readonly de
 const MAX_CUES = 4096;
 const MAX_ACTIVE = 32;
 const MAX_VISITS = 128;
+const MAX_SWAP_WAIT_SECONDS = 5;
+const validIdentity = (value: string) => typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[\u0000-\u0020\u007f]/.test(value);
 
 export class SubtitleSyncView {
   private readonly cues: readonly CaptionCue[];
@@ -27,6 +29,8 @@ export class SubtitleSyncView {
   private frozen = false;
   private disposed = false;
   private pending?: SubtitleSyncRecord;
+  private pendingAtSeconds?: number;
+  private lastTitleSeconds?: number;
 
   constructor(cues: readonly CaptionCue[], private readonly generation: string, private readonly subtitleHash: string) {
     if (cues.length > MAX_CUES || cues.some(c => !Number.isFinite(c.start) || !Number.isFinite(c.end) || c.end <= c.start || c.text.length > 4096) || cues.some((c, i) => i > 0 && c.start < cues[i - 1].start)) throw new Error('Subtitle window exceeds its supported bounds.');
@@ -36,27 +40,36 @@ export class SubtitleSyncView {
   }
   accept(record: SubtitleSyncRecord): boolean {
     if (this.disposed || record.version !== 1 || record.playback_generation !== this.generation || record.subtitle_hash !== this.subtitleHash || record.algorithm_version !== 'activity-offset-affine-v1' || !Number.isSafeInteger(record.revision) || record.revision <= this.seenRevision) return false;
+    if (!validIdentity(record.media_identity) || !validIdentity(record.audio_identity) || typeof record.manual !== 'boolean' || !['observing', 'accepted', 'ambiguous', 'unavailable'].includes(record.state)) return false;
     if (this.identity && (this.identity.media !== record.media_identity || this.identity.audio !== record.audio_identity)) return false;
+    const c = record.correction;
+    if (c !== null && (!c || typeof c !== 'object' || !Number.isSafeInteger(c.anchorUs) || !Number.isSafeInteger(c.offsetUs) || Math.abs(c.offsetUs) > 30_000_000 || !Number.isFinite(c.scale) || c.scale < 0.98 || c.scale > 1.02)) return false;
+    if (record.state === 'accepted' && c === null) return false;
     this.seenRevision = record.revision;
     this.identity = { media: record.media_identity, audio: record.audio_identity };
-    if (this.frozen || record.manual || record.state !== 'accepted' || !record.correction) return false;
-    const c = record.correction;
-    if (!Number.isSafeInteger(c.anchorUs) || !Number.isSafeInteger(c.offsetUs) || Math.abs(c.offsetUs) > 30_000_000 || !Number.isFinite(c.scale) || c.scale < 0.98 || c.scale > 1.02) return false;
+    if (record.manual) { this.frozen = true; this.pending = undefined; this.pendingAtSeconds = undefined; }
+    if (this.frozen || record.state !== 'accepted' || !c) return false;
+    if (!this.pending) this.pendingAtSeconds = this.lastTitleSeconds;
     this.pending = { ...record, correction: { ...c } };
     return true;
   }
   manualDelay(seconds: number): void {
     if (!Number.isFinite(seconds) || Math.abs(seconds) > 120) throw new Error('Invalid subtitle delay.');
-    this.manualSeconds = seconds; this.frozen = true; this.pending = undefined;
+    this.manualSeconds = seconds; this.frozen = true; this.pending = undefined; this.pendingAtSeconds = undefined;
   }
   resume(): void { this.frozen = false; }
   at(playerSeconds: number, originSeconds: number): SubtitleWindow {
-    if (this.disposed || !Number.isFinite(playerSeconds) || !Number.isFinite(originSeconds)) return { texts: [], deferred: true };
-    let result = this.lookup(this.subtitleTime(playerSeconds + originSeconds));
-    if (this.pending && result.texts.length === 0 && !result.deferred) {
-      this.record = this.pending; this.pending = undefined;
-      result = this.lookup(this.subtitleTime(playerSeconds + originSeconds));
+    const titleSeconds = playerSeconds + originSeconds;
+    if (this.disposed || !Number.isFinite(playerSeconds) || !Number.isFinite(originSeconds) || !Number.isFinite(titleSeconds)) return { texts: [], deferred: true };
+    let result = this.lookup(this.subtitleTime(titleSeconds));
+    if (this.pending) {
+      if (this.pendingAtSeconds === undefined || (this.lastTitleSeconds !== undefined && titleSeconds < this.lastTitleSeconds)) this.pendingAtSeconds = titleSeconds;
+      if ((!result.deferred && result.texts.length === 0) || titleSeconds - this.pendingAtSeconds >= MAX_SWAP_WAIT_SECONDS) {
+        this.record = this.pending; this.pending = undefined; this.pendingAtSeconds = undefined;
+        result = this.lookup(this.subtitleTime(titleSeconds));
+      }
     }
+    this.lastTitleSeconds = titleSeconds;
     return result;
   }
   private subtitleTime(titleSeconds: number): number {
@@ -75,5 +88,5 @@ export class SubtitleSyncView {
     }
     return { texts: texts.reverse(), deferred: false };
   }
-  dispose(): void { this.disposed = true; this.pending = undefined; }
+  dispose(): void { this.disposed = true; this.pending = undefined; this.pendingAtSeconds = undefined; }
 }
