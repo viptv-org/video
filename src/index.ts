@@ -54,3 +54,5 @@ function requireVideo(video: HtmlMediaLike | undefined): HtmlMediaLike {
 
 export * from './browser-capabilities';
 export * from './browser-policy';
+
+export { SubtitleSyncView, type SubtitleSyncRecord, type SubtitleWindow } from './subtitle-sync';
