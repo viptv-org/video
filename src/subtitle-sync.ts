@@ -35,11 +35,11 @@ export class SubtitleSyncView {
     this.prefixEnd = this.cues.map(c => end = Math.max(end, c.end));
   }
   accept(record: SubtitleSyncRecord): boolean {
-    if (this.disposed || this.frozen || record.manual || record.version !== 1 || record.playback_generation !== this.generation || record.subtitle_hash !== this.subtitleHash || record.algorithm_version !== 'activity-offset-affine-v1' || !Number.isSafeInteger(record.revision) || record.revision <= this.seenRevision) return false;
+    if (this.disposed || record.version !== 1 || record.playback_generation !== this.generation || record.subtitle_hash !== this.subtitleHash || record.algorithm_version !== 'activity-offset-affine-v1' || !Number.isSafeInteger(record.revision) || record.revision <= this.seenRevision) return false;
     if (this.identity && (this.identity.media !== record.media_identity || this.identity.audio !== record.audio_identity)) return false;
     this.seenRevision = record.revision;
     this.identity = { media: record.media_identity, audio: record.audio_identity };
-    if (record.state !== 'accepted' || !record.correction) return false;
+    if (this.frozen || record.manual || record.state !== 'accepted' || !record.correction) return false;
     const c = record.correction;
     if (!Number.isSafeInteger(c.anchorUs) || !Number.isSafeInteger(c.offsetUs) || Math.abs(c.offsetUs) > 30_000_000 || !Number.isFinite(c.scale) || c.scale < 0.98 || c.scale > 1.02) return false;
     this.pending = { ...record, correction: { ...c } };

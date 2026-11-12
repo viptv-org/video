@@ -21,8 +21,8 @@ describe('bounded subtitle correction', () => {
     view.manualDelay(1);
     expect(view.accept(record(2))).toBe(false);
     expect(view.at(593.05, 60).texts).toEqual(['dialogue']);
-    view.resume(); expect(view.accept(record(2))).toBe(true);
-    view.dispose(); expect(view.accept(record(3))).toBe(false);
+    view.resume(); expect(view.accept(record(3))).toBe(true);
+    view.dispose(); expect(view.accept(record(4))).toBe(false);
   });
   it('defers dense/adversarial tracks without scanning or mutating the full track', () => {
     const view = new SubtitleSyncView(Array.from({ length: 4096 }, (_, i) => ({ start: i, end: 5000, text: String(i) })), 'generation', 'hash');

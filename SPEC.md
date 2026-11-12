@@ -276,3 +276,23 @@ to the plugin's existing `fit`/`crop` commands and reapplies Fill after source
 replacement. DOM adapters retain the host's CSS presentation. The application
 owns the mode's UI state and resetting it for a new title. The command does not
 request or replace a backend playback lease.
+
+
+## Provider subtitle timing
+
+`SubtitleSyncView` retains at most 4096 canonical plain-text cues. `at` accepts
+player content seconds and the single effective origin; callers whose player
+adapter already reports title time pass origin zero. Positive offset/delay
+shows a cue later. Anchor/offset fields use safe integer microseconds; scale
+is dimensionless and independent of playback speed.
+
+Correction records require the selected playback generation, session media/audio
+identity, subtitle hash, algorithm version and increasing revision. Manual delay
+freezes automatic changes until explicit resume/reset. Pending automatic changes
+apply at a cue gap. Lookup visits at most 128 intervals and returns at most 32
+active strings; dense windows defer. No track-wide timestamp mutation, media
+reload or backend selection occurs in this class.
+
+This is a bounded projection mechanism. Automatic confidence is an uncalibrated
+heuristic; it does not establish speech acquisition, matching-release accuracy,
+browser frame budgets or TV-device qualification.
