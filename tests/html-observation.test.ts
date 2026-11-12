@@ -3,13 +3,13 @@ import { VizioHtml5Adapter, type HtmlMediaLike } from '../src/vizio-html5';
 
 class Media implements HtmlMediaLike {
   src = ''; currentTime = 0; duration = 120; paused = true; ended = false; error = null;
-  videoWidth = 1920; videoHeight = 1080; readyState = 4; frames = 0;
+  videoWidth = 1920; videoHeight = 1080; readyState = 4; frames = 0; dropped = 0;
   events = new EventTarget();
   play = vi.fn(async () => { this.paused = false; this.emit('playing'); });
   pause = vi.fn(() => { this.paused = true; this.emit('pause'); });
   load = vi.fn();
   removeAttribute = vi.fn(() => { this.src = ''; });
-  getVideoPlaybackQuality = () => ({ totalVideoFrames: this.frames });
+  getVideoPlaybackQuality = () => ({ totalVideoFrames: this.frames, droppedVideoFrames: this.dropped });
   addEventListener(event: string, listener: () => void) { this.events.addEventListener(event, listener); }
   removeEventListener(event: string, listener: () => void) { this.events.removeEventListener(event, listener); }
   emit(event: string) { this.events.dispatchEvent(new Event(event)); }
@@ -39,6 +39,14 @@ describe('HTML media observations', () => {
     expect(player.snapshot.time.positionSeconds).toBe(11);
     await player.stop();await vi.advanceTimersByTimeAsync(1000);
     expect(vi.getTimerCount()).toBe(0);expect(player.snapshot.state).toBe('stopped');
+  });
+  it('does not accept predecode dropped frames as the first displayed video frame', async () => {
+    vi.useFakeTimers();const media=new Media();media.frames=3;media.dropped=3;
+    const player=new VizioHtml5Adapter(media);players.push(player);
+    const opening=player.open({url,kind:'vod',startupBudgetMs:500});media.emit('loadedmetadata');await opening;
+    await vi.advanceTimersByTimeAsync(501);
+    expect(player.snapshot.error?.message).toContain('did not produce a decoded video frame');
+    expect(player.snapshot.diagnostics).toMatchObject({videoFrames:3,droppedFrames:3});
   });
   it('reports video-frame stalls separately from advancing audio/media time and resets on a manual seek', async () => {
     vi.useFakeTimers(); const media=new Media();media.frames=1;

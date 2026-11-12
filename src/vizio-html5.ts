@@ -586,7 +586,8 @@ export class VizioHtml5Adapter extends SessionPlayer {
     };
   }
   private hasVideoFrame(): boolean {
-    const frames = this.media.getVideoPlaybackQuality?.().totalVideoFrames;
+    const quality = this.media.getVideoPlaybackQuality?.();
+    const frames = quality ? Math.max(0, quality.totalVideoFrames - (quality.droppedVideoFrames ?? 0)) : undefined;
     return this.presentedFrame !== undefined || ((this.media.videoWidth ?? 0) > 0 && (frames === undefined || frames > 0)) ||
       (this.options.unreliableFrameReporting === true && this.frameProgressVerified);
   }
