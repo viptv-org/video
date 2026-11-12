@@ -40,6 +40,45 @@ describe('HTML media observations', () => {
     await player.stop();await vi.advanceTimersByTimeAsync(1000);
     expect(vi.getTimerCount()).toBe(0);expect(player.snapshot.state).toBe('stopped');
   });
+  it('reports video-frame stalls separately from advancing audio/media time and resets on a manual seek', async () => {
+    vi.useFakeTimers(); const media=new Media();media.frames=1;
+    const {player}=await open(media, {unreliableFrameReporting:true});
+    media.currentTime=.25;media.frames=2;await vi.advanceTimersByTimeAsync(250);
+    media.currentTime=.5;media.frames=3;await vi.advanceTimersByTimeAsync(250);
+    expect(player.snapshot.diagnostics?.videoFrameProgress).toBe('advancing');
+    media.currentTime=3;await vi.advanceTimersByTimeAsync(2500);
+    expect(player.snapshot.diagnostics).toMatchObject({videoFrames:3,mediaPositionSeconds:3,videoFrameProgress:'stalled'});
+    expect(player.snapshot.diagnostics?.presentedPositionSeconds).toBeUndefined();
+    expect(player.snapshot.state).toBe('playing');expect(media.load).toHaveBeenCalledOnce();
+    await player.seek(40);media.frames=4;media.currentTime=40.25;await vi.advanceTimersByTimeAsync(250);
+    expect(player.snapshot.diagnostics?.videoFrameProgress).toBe('observing');
+    media.frames=5;media.currentTime=40.5;await vi.advanceTimersByTimeAsync(250);
+    expect(player.snapshot.diagnostics?.videoFrameProgress).toBe('advancing');
+  });
+  it('leaves video progress unavailable when an advancing native clock exposes no frame evidence', async () => {
+    vi.useFakeTimers();const {media,player}=await open(new Media(),{unreliableFrameReporting:true});
+    for(let tick=1;tick<=20;tick++){media.currentTime=tick/4;await vi.advanceTimersByTimeAsync(250);}
+    expect(player.snapshot.diagnostics).toMatchObject({mediaPositionSeconds:5,videoFrames:0,videoFrameProgress:'unavailable'});
+    expect(player.snapshot.diagnostics?.presentedFrames).toBeUndefined();
+  });
+  it('fences actual frame callbacks across source replacement and Stop', async () => {
+    vi.useFakeTimers();const media=new Media();
+    const callbacks: Array<(now:number,metadata:{mediaTime:number;presentedFrames:number})=>void>=[];
+    const request=vi.fn((callback:(typeof callbacks)[number])=>{callbacks.push(callback);return callbacks.length;});
+    const cancel=vi.fn();Object.assign(media,{requestVideoFrameCallback:request,cancelVideoFrameCallback:cancel});
+    const {player}=await open(media,{unreliableFrameReporting:true});
+    callbacks[0](0,{mediaTime:.5,presentedFrames:3});media.currentTime=.5;media.emit('timeupdate');
+    expect(player.snapshot.diagnostics).toMatchObject({presentedFrames:3,presentedPositionSeconds:.5});
+    const stale=callbacks[1];
+    const next=player.open({url,kind:'vod',timelineOffsetSeconds:100});media.emit('loadedmetadata');await next;
+    stale(0,{mediaTime:50,presentedFrames:999});media.emit('timeupdate');
+    expect(player.snapshot.diagnostics?.presentedFrames).toBeUndefined();
+    callbacks[2](0,{mediaTime:.25,presentedFrames:1});media.currentTime=.25;media.emit('timeupdate');
+    expect(player.snapshot.diagnostics).toMatchObject({presentedFrames:1,presentedPositionSeconds:100.25});
+    await player.stop();const count=request.mock.calls.length;callbacks[3](0,{mediaTime:60,presentedFrames:1000});
+    expect(request).toHaveBeenCalledTimes(count);expect(cancel).toHaveBeenCalled();
+    expect(player.snapshot.state).toBe('stopped');expect(vi.getTimerCount()).toBe(0);
+  });
   it('does not let a delayed play acknowledgment override a later Pause or restart observation after Stop', async () => {
     vi.useFakeTimers(); const {media,player}=await open();
     let resolve!:()=>void;media.play.mockImplementation(()=>new Promise<void>(done=>{resolve=done;}));
