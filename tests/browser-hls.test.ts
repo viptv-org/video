@@ -391,8 +391,11 @@ it('retires native frame callbacks before the same-session HLS-to-MSE handoff', 
     const opening=player.open({url:url(),kind:'vod',preferredSubtitleLanguage:'en'});media.emit('loadedmetadata');await opening;
     media.paused=false;media.emit('playing');callbacks[0](0,{mediaTime:.5,presentedFrames:3});media.emit('timeupdate');
     expect(player.snapshot.diagnostics?.presentedFrames).toBe(3);
+    let finishPlay!:()=>void;media.play.mockImplementationOnce(()=>new Promise<void>(resolve=>{finishPlay=resolve;}));
+    const pendingPlay=player.play();
     const retired=callbacks[1];await vi.advanceTimersByTimeAsync(750);
     expect(hls.instances).toHaveLength(1);expect(cancel).toHaveBeenCalled();
+    finishPlay();await pendingPlay;expect(player.snapshot.state).toBe('buffering');
     media.emit('loadedmetadata');retired(0,{mediaTime:99,presentedFrames:999});media.emit('timeupdate');
     expect(player.snapshot.diagnostics?.presentedFrames).toBeUndefined();
     expect(player.snapshot.diagnostics?.presentationEvidence).toBeUndefined();
