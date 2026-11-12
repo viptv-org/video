@@ -108,3 +108,24 @@ backpressure. hls.js surfaces an explicit HTTP 406 media refusal immediately.
 A paced HTTPS MPEG-TS/AC-3 fixture played through the real Rust engine for
 45 seconds in Chromium and the physical Vizio, preserving H.264 video and
 converting only audio to AAC. The Vizio reported 1,472 frames and zero drops.
+
+### HTML controls and sparse events
+
+`tests/browser/html-controls.mjs` checks actual HLS decoding in Chromium,
+Firefox and Playwright WebKit. Serve a credential-free `index.m3u8` fixture
+through `tests/browser/server.mjs`, then set `MEDIA_TEST_URL` and
+`MEDIA_PLAYWRIGHT_PACKAGE` (the tv-web package.json path) before running it.
+`MEDIA_WEBKIT_EXECUTABLE` can select an installed userspace WebKit wrapper.
+
+The ordinary and sparse-event cases assert independent displayed-frame counter
+progress and media clocks, pause hold, paused manual seek, resume, two
+same-adapter source replacements and disposal. Sparse cases suppress only
+`timeupdate` delivery, keeping the real media element and decoder. These
+checks record compositor callback positions when the engine emits them; a
+silent callback API retains playback-quality counter evidence. The checks
+qualify desktop browser behavior, not physical PS4 video output or
+its reported firmware-specific freeze.
+
+Frame callbacks follow the [video frame callback proposal](https://wicg.github.io/video-rvfc/).
+Clock and pending Play behavior follow the [HTML media model](https://html.spec.whatwg.org/multipage/media.html).
+HLS replacement disposes its owning [hls.js instance](https://hlsjs.video-dev.org/api-docs/hls.js.hls.destroy).

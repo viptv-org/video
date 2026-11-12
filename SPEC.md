@@ -56,6 +56,23 @@ rollout switch: `clientInspection` enables direct-delivery caption discovery,
 `localRemux` enables the MSE path and local audio-track inspection, and either
 switch makes Vizio send its probed browser profile instead of the declared one.
 
+### HTML clock and video evidence
+
+Native engines with sparse media events keep a read-only 250 ms media-clock
+observation while playing. Pause, Stop, end, replacement and disposal retire
+that observer. A delayed Play acknowledgement cannot override a newer control
+or session.
+
+HTML diagnostics distinguish the media position, native decoded-frame counter
+(when exposed), playback-quality total/dropped counters and compositor callback
+counter/position. Video progress is unavailable without
+usable frame evidence; an advancing audio/media clock never supplies a frame
+count or a presented timestamp. A measured counter that stops for two seconds
+while media time advances by one second reports `videoFrameProgress: 'stalled'`.
+This observation never seeks, restarts, changes engines or converts the source.
+The explicit unreliable-frame host option retains `media-progress` startup
+compatibility; it does not establish decoded-video presentation.
+
 ### Tizen AVPlay
 
 `TizenAvplayAdapter` drives the narrow `AvplayManager` port (open, prepare,
