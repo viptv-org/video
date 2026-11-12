@@ -330,7 +330,11 @@ export class VizioHtml5Adapter extends SessionPlayer {
             this.nativeHlsFallback = (stalled = false) => {
               if (!this.isCurrent(sessionId) || !stalled && ![3, 4].includes(this.media.error?.code ?? 0)) return false;
               this.nativeHlsFallback = null;
+              this.stopMediaObservation();
               this.clearFirstFrameWatchdog();
+              this.resetProgressObservation();
+              this.frameProgressVerified = false;
+              this.presentedFrame = undefined;
               attempt++;
               if (request.kind !== 'live' && Number.isFinite(this.media.currentTime) && this.media.currentTime > 0)
                 targetPosition = this.media.currentTime;
